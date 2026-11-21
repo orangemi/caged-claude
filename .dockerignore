@@ -1,0 +1,12 @@
+*
+!caged/
+!caged/__init__.py
+!caged/shared/
+!caged/shared/**
+!caged/runtime/
+!caged/runtime/**
+!containers/
+!containers/**
+caged/host/
+**/__pycache__/
+**/*.pyc

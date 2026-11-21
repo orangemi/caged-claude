@@ -1,0 +1,14 @@
+# 配置模板：复制到 config/mihomo.yaml 后，填写自己的节点信息。
+# 此处所有服务器和凭证均为占位值，不能直接连接。
+# 启动器只读取 proxies 中选定的节点，网关的全局模式、DNS 和 TUN 由程序生成。
+
+proxies:
+  - name: "Singapore"
+    type: anytls
+    server: sg.example.com
+    port: 443
+    password: "REPLACE_WITH_YOUR_NODE_PASSWORD"
+    sni: sg.example.com
+    udp: true
+    client-fingerprint: chrome
+    skip-cert-verify: false

@@ -1,0 +1,48 @@
+# 优先级：启动参数 > CAGED_BROWSER_* 环境变量 > 本文件 > 内置默认值。
+# proxy.file_path 省略时读取本文件同目录的 mihomo.yaml；相对路径也以该目录为基准。
+# 可选项均已注释，旁边注明默认值；需要覆盖时取消注释。
+proxy:
+  # file_path: mihomo.yaml  # 可选，默认 mihomo.yaml，与本应用 YAML 同目录。
+  node: "Singapore"
+  expected_country: SG  # 两位国家代码；null 或 any 表示不限制国家。
+  # dns_upstream: https://1.1.1.1/dns-query  # 可选，默认此值；使用公网 IPv4 避免额外的 DNS 引导。
+
+# 时区、locale、语言和 UID/GID 同时应用于 browser 与 claude 容器。
+browser:
+  timezone: Asia/Singapore
+  # locale: en_US.UTF-8  # 可选，默认 en_US.UTF-8。
+  # language: en-US  # 可选，默认 en-US；自动生成语言偏好 en-US,en。
+  # puid: host  # 可选，默认 host，使用启动者的 UID；可显式指定整数，例如 1000。
+  # pgid: host  # 可选，默认 host，使用启动者的主 GID；可显式指定整数，例如 1000。
+  # shm_size: 1g  # 可选，默认 1g。
+
+# 整个 ports 块均可省略；内部端口不发布到 Mac。
+# ports:
+#   ui: 3002  # 可选，默认 3002；Mac 上绑定到 127.0.0.1 的浏览器访问端口。
+#   controller: 9090  # 可选，默认 9090；mihomo 控制 API，用于启动与审计检查。
+#   mixed: 17890  # 可选，默认 17890；额外 HTTP/SOCKS 代理入口，当前 TUN 链路不使用。
+#   debug: 9222  # 可选，默认 9222；Chromium DevTools，用于真实浏览器检查。
+#   browser_probe: 19981  # 可选，默认 19981；浏览器容器只读环境探针，不发布。
+#   claude_probe: 19982  # 可选，默认 19982；Claude 容器只读环境探针，不发布。
+
+# instance: caged-browser  # 可选，默认 caged-browser。
+
+# 可选，默认 []，不挂载 workspace；可填写一个路径或路径列表。
+# 两种应用都以相同绝对路径读写挂载。
+# 相对路径以本 YAML 目录为基准；CLI 可重复使用 --workspace。
+# workspace: []
+# workspace:
+#   - /Users/yourname/Projects/your-project
+
+# 可选，默认持久化到本项目 config/.claude，容器内为 /config/.claude。
+# claude:
+#   config_dir: .claude
+
+# 整个 monitor 块可省略。单位为秒，优先级仍是 CLI > ENV > YAML > 默认。
+# monitor:
+#   tick: 5               # 本地配置、环境和防火墙巡检；每轮结束后等待。
+#   interval: 30          # DNS 与出口复检间隔，从上次成功完成后计。
+#   lease: 90             # 内核放行的有效期，只有复检通过才续期。
+#   probe_timeout: 20     # 单轮探针的最大执行时间。
+#   retry_initial: 15     # 断网后首次自动重检等待。
+#   retry_max: 300        # 指数退避的最大等待时间。
