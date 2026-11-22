@@ -1,6 +1,6 @@
 """Eleven evidence-based checks for a new, disposable container session."""
 import json
-from . import docker as engine
+from . import docker as engine, stateful
 from .errors import CageError
 from caged.shared.policy import BROWSER_HTTPS_PORT
 from datetime import datetime, timezone
@@ -77,12 +77,16 @@ def run_audit(session):
                     and not state['HostConfig'].get('PidMode'), 'Unexpected host privilege or PID sharing')
             actual = {mount['Destination']: mount['Source'] for mount in state.get('Mounts', []) if mount['Type'] == 'bind'}
             require(actual == session.expected_mounts(role), 'Unexpected host filesystem mount in ' + role)
-            require(all(mount['RW'] for mount in state.get('Mounts', []) if mount['Type'] == 'bind'), 'Configured mount is not writable')
+            # Only the probe code and entrypoint are read-only; every state mount must be writable.
+            require(all(mount['RW'] != mount['Destination'].startswith(stateful.RUNTIME + '/')
+                        for mount in state.get('Mounts', []) if mount['Type'] == 'bind'),
+                    'A state mount is read-only or the probe runtime is writable')
             require(state['HostConfig']['AutoRemove'], 'Container does not remove its temporary data on exit')
         require(system['private_paths_absent'], 'Browser can read gateway secrets or a Docker socket')
         passed('filesystem_boundary', {'workspace': [str(path) for path in session.args.workspace],
                                       'claude_state': str(session.args.claude_config_dir),
-                                      'scope': '仅明示的 workspace 和 Claude 状态目录；无额外宿主挂载、Docker socket 或网关凭证'})
+                                      'environment_state': str(session.state.root),
+                                      'scope': '仅明示的 workspace、Claude 凭证与实例状态目录，以及只读的探针代码；无额外宿主挂载、Docker socket 或网关凭证'})
         require(system['management_http'] == 401 and system['no_network_admin_or_raw'],
                 'Browser can administer the gateway without authentication or has network capabilities')
         ports = gateway_state['NetworkSettings']['Ports']

@@ -34,9 +34,15 @@ browser:
 # workspace:
 #   - /Users/yourname/Projects/your-project
 
-# 可选，默认持久化到本项目 config/.claude，容器内为 /config/.claude。
+# 可选。Claude 凭证默认单独保存在本项目 config/claude/<实例>，容器内为 /home/claude/.claude。
 # claude:
-#   config_dir: .claude
+#   config_dir: claude/my-instance  # 只能是本项目 config/ 下的子目录。
+#   sudo: true                      # 默认 true：claude-user 可免密码 sudo；false 时只能从宿主 ./cage shell --root。
+
+# 可选。Claude 的 Linux 环境（/etc、/usr、/var、/opt、/srv、/root、/home/claude）和浏览器资料
+# 实时保存在 <state.dir>/<实例>/，默认本项目 state/。必须是 Linux 文件系统（如 ext4）。
+# state:
+#   dir: ../state
 
 # 整个 monitor 块可省略。单位为秒，优先级仍是 CLI > ENV > YAML > 默认。
 # monitor:

@@ -6,7 +6,7 @@ import subprocess
 import sys
 import time
 import uuid
-from . import docker as engine, images, proxy
+from . import docker as engine, images, proxy, stateful
 from .config import runtime_policy
 from .errors import CageError
 from .instance import Instance
@@ -33,6 +33,7 @@ class Session:
         self.network_container_id = None
         self.network_session_id = None
         self.agent_keys = {role: secrets.token_hex(32) for role in ('browser', 'claude')}
+        self.state = stateful.InstanceState(args.state_dir, args.instance)
 
     def start_network(self):
         engine.ensure_names_available(self.instance.names)
@@ -47,7 +48,9 @@ class Session:
                 except OSError:
                     raise CageError(f'Local port {self.args.port} is already in use; select another with --port.')
         images.build('network')
-        command = ['docker', 'run', '--rm', '-i', '--name', self.instance.network,
+        # Both applications share this UTS namespace; a stable hostname keeps
+        # the persisted Chromium profile lock valid across restarts.
+        command = ['docker', 'run', '--rm', '-i', '--name', self.instance.network, '--hostname', self.instance.name,
                    *self.managed_labels(),
                    '--cap-add', 'NET_ADMIN', '--device', '/dev/net/tun',
                    '--read-only', '--tmpfs', '/run/caged:rw,noexec,nosuid,size=32m',
@@ -81,8 +84,16 @@ class Session:
 
     def exec_probe(self, target, module, *arguments, user=None, **kwargs):
         identity = ['--user', user] if user else []
-        return engine.docker('exec', *identity, '-e', POLICY_ENV + '=' + json.dumps(self.policy),
-                      target, 'python3', '-m', module, *arguments, **kwargs)
+        return engine.docker('exec', *identity, *self.runtime_environment(target),
+                             '-e', POLICY_ENV + '=' + json.dumps(self.policy),
+                             target, 'python3', '-m', module, *arguments, **kwargs)
+
+    def runtime_environment(self, target):
+        # The Claude image carries no probe code: it is mounted read-only at
+        # /caged-runtime, outside the persisted directories.
+        if target == self.instance.claude:
+            return ['-e', 'PYTHONPATH=' + stateful.RUNTIME, '-e', 'PYTHONSAFEPATH=1']
+        return []
 
     def policy_snapshot(self):
         result = self.exec_probe(self.network_container_id, 'caged.runtime.checks.policy')
@@ -147,6 +158,7 @@ class Session:
                    '--network', 'container:' + self.network_container_id,
                    '--cap-drop', 'NET_RAW', '--shm-size=' + self.args.shm_size,
                    *self.common_environment(), *self.workspace_arguments(),
+                   '--mount', f'type=bind,src={self.state.browser},dst=/config',
                    '-e', 'CHROME_CLI=' + flags, images.IMAGES['browser']]
 
     def managed_labels(self, client=False):
@@ -169,24 +181,43 @@ class Session:
             arguments += ['--workdir', str(self.args.workspace[0])]
         return arguments
 
+    def runtime_mounts(self):
+        """Read-only probe code and entrypoint, kept out of the persisted state."""
+        return {stateful.RUNTIME + '/caged': str(ROOT / 'caged'),
+                stateful.RUNTIME + '/entrypoint.sh': str(ROOT / 'containers' / 'claude' / 'entrypoint.sh')}
+
     def expected_mounts(self, role):
         mounts = {str(path): str(path) for path in self.args.workspace} if role in ('browser', 'claude') else {}
+        if role == 'browser':
+            mounts['/config'] = str(self.state.browser)
         if role == 'claude':
-            mounts['/config/.claude'] = str(self.args.claude_config_dir)
+            mounts.update(self.state.claude_mounts(self.args.claude_config_dir))
+            mounts.update(self.runtime_mounts())
         return mounts
 
+    def claude_state_arguments(self):
+        mounts = [item for destination, source in self.state.claude_mounts(self.args.claude_config_dir).items()
+                  for item in ('--mount', f'type=bind,src={source},dst={destination}')]
+        return mounts + [item for destination, source in self.runtime_mounts().items()
+                         for item in ('--mount', f'type=bind,src={source},dst={destination},readonly')]
+
     def claude_command(self):
-        return ['docker', 'run', '--rm', '--init', '--name', self.instance.claude,
+        # No --init: the image's PID 1 is caged/runtime/init.py (see its docstring).
+        return ['docker', 'run', '--rm', '--name', self.instance.claude,
                 *self.managed_labels(client=True),
                 '--network', 'container:' + self.network_container_id, '--cap-drop', 'NET_RAW',
-                *self.common_environment(), *self.workspace_arguments(),
-                '--mount', f'type=bind,src={self.args.claude_config_dir},dst=/config/.claude', images.IMAGES['claude']]
+                *self.common_environment(), *self.workspace_arguments(), *self.claude_state_arguments(),
+                '-e', 'CAGED_SUDO=' + ('1' if self.args.claude_sudo else '0'), images.IMAGES['claude']]
+
+    def prepare_claude_state(self):
+        stateful.adopt_legacy_credentials(self.args)
+        self.state.ensure(images.IMAGES['claude'])
 
     def start_claude(self):
         if not self.network_running():
             raise CageError('Network is no longer running. Claude was not started.')
-        self.args.claude_config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         images.build('claude')
+        self.prepare_claude_state()
         command = self.claude_command()
         if self.detached:
             command.insert(2, '-d')
@@ -257,6 +288,7 @@ class Session:
         images.build('browser')
         if not self.network_running():
             raise CageError('Network is no longer running. Browser was not started.')
+        self.state.prepare_browser()
         command = self.browser_command()
         if self.detached:
             command.insert(2, '-d')
@@ -275,7 +307,8 @@ class Session:
             raise CageError('Cannot enroll private application probe: ' + role)
         if role == 'browser':
             engine.docker('exec', container, 'bash', '/custom-cont-init.d/10-caged-settings', timeout=25)
-        engine.docker('exec', '-d', '--user', '0:0', container, 'python3', '-m', 'caged.runtime.agents.environment', role)
+        engine.docker('exec', '-d', '--user', '0:0', *self.runtime_environment(container), container,
+                      'python3', '-m', 'caged.runtime.agents.environment', role)
 
     def wait_gate_open(self):
         deadline = time.monotonic() + 100

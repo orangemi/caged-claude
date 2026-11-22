@@ -27,7 +27,10 @@ DEFAULTS = {
     'mixed_port': 17890,
     'debug_port': 9222,
     'workspace': [],
-    'claude_config_dir': str(ROOT / 'config' / '.claude'),
+    # None means config/claude/<instance>; resolved once the instance is known.
+    'claude_config_dir': None,
+    'claude_sudo': True,
+    'state_dir': str(ROOT / 'state'),
     'browser_probe_port': 19981,
     'claude_probe_port': 19982,
     'monitor_tick': 5,
@@ -57,6 +60,8 @@ FIELDS = {
     'instance': ('instance', 'INSTANCE'),
     'workspace': ('workspace', 'WORKSPACE'),
     'claude_config_dir': ('claude.config_dir', 'CLAUDE_CONFIG_DIR'),
+    'claude_sudo': ('claude.sudo', 'CLAUDE_SUDO'),
+    'state_dir': ('state.dir', 'STATE_DIR'),
     'browser_probe_port': ('ports.browser_probe', 'BROWSER_PROBE_PORT'),
     'claude_probe_port': ('ports.claude_probe', 'CLAUDE_PROBE_PORT'),
     'monitor_tick': ('monitor.tick', 'MONITOR_TICK'),
@@ -124,7 +129,7 @@ def resolve(argv=None, environ=None):
         allowed.setdefault(parts[0], set()).update(parts[1:])
     allowed['proxy'].add('config')  # Legacy YAML alias; file_path takes precedence.
     if not isinstance(data, dict) or set(data) - set(allowed):
-        raise ConfigError('Unknown application YAML section; supported: proxy, browser, ports, instance, workspace, claude, monitor')
+        raise ConfigError('Unknown application YAML section; supported: proxy, browser, ports, instance, workspace, claude, state, monitor')
     for section, keys in allowed.items():
         if keys and section in data and (not isinstance(data[section], dict) or set(data[section]) - keys):
             raise ConfigError('Unknown or invalid application configuration section: ' + section)
@@ -216,7 +221,10 @@ def resolve(argv=None, environ=None):
         raise ConfigError('workspace must be a path or a list of paths')
     base = args.settings.parent if args.sources['workspace'] == 'config' else Path.cwd()
     args.workspace = []
-    protected = ['/config', '/proc', '/sys', '/dev', '/run', '/etc', '/usr', '/bin', '/sbin', '/lib', '/lib64']
+    # Container system paths, including the persisted state mounts: a
+    # workspace there would hide them or plant mount points in the state.
+    protected = ['/config', '/proc', '/sys', '/dev', '/run', '/etc', '/usr', '/bin', '/sbin', '/lib', '/lib64',
+                 '/var', '/opt', '/srv', '/root', '/home/claude', '/caged-runtime']
     for item in value:
         if not isinstance(item, str) or not item.strip() or any(char in item for char in (',', ':', '\n', '\r')):
             raise ConfigError('Workspace paths must be nonempty and cannot contain comma, colon or newlines')
@@ -228,6 +236,8 @@ def resolve(argv=None, environ=None):
             raise ConfigError('Workspace would mask a container system directory: ' + str(folder))
         if folder not in args.workspace:
             args.workspace.append(folder)
+    if args.claude_config_dir is None:
+        args.claude_config_dir = ROOT / 'config' / 'claude' / args.instance
     if not isinstance(args.claude_config_dir, (str, Path)) or not str(args.claude_config_dir).strip():
         raise ConfigError('claude.config_dir must be a directory path')
     state = Path(args.claude_config_dir).expanduser()
@@ -237,6 +247,22 @@ def resolve(argv=None, environ=None):
     if private_root not in state.parents or any(char in str(state) for char in (',', ':', '\n', '\r')):
         raise ConfigError('Claude state must be a subdirectory of the project config/ directory')
     args.claude_config_dir = state
+    value = args.claude_sudo
+    if isinstance(value, str) and value.strip().lower() in ('true', 'yes', 'on', '1'):
+        value = True
+    elif isinstance(value, str) and value.strip().lower() in ('false', 'no', 'off', '0'):
+        value = False
+    if not isinstance(value, bool):
+        raise ConfigError('claude.sudo must be true or false')
+    args.claude_sudo = value
+    if not isinstance(args.state_dir, (str, Path)) or not str(args.state_dir).strip():
+        raise ConfigError('state.dir must be a directory path')
+    folder = Path(args.state_dir).expanduser()
+    base = args.settings.parent if args.sources['state_dir'] == 'config' else Path.cwd()
+    folder = (folder if folder.is_absolute() else base / folder).resolve()
+    if any(char in str(folder) for char in (',', ':', '\n', '\r')):
+        raise ConfigError('state.dir cannot contain comma, colon or newlines')
+    args.state_dir = folder
     try:
         url = urlsplit(args.dns_upstream)
         address = ipaddress.ip_address(url.hostname or '')

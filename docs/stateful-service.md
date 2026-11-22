@@ -1,67 +1,264 @@
-# 有状态开发服务设计
+# 有状态 Linux 环境设计
 
-本文是后续生命周期调整方案。当前代码已提供 `./cage shell`，但 `./cage up` / `./cage down` 仍使用原来的 `--rm` 临时容器模式；尚未执行本方案中的迁移或更改正在运行的实例。
+> 状态：阶段 1（§9）已实现，阶段 2 的维护命令（reset、archive、snapshot、restore、destroy、upgrade）尚未实现。本文替代此前“保留容器可写层 + 具名卷”的方案。
 
-## 为什么只挂载 `.claude` 不够
+## 1. 目标
 
-`.claude` 保存 Claude 的授权、设置、会话和记忆，不能覆盖整个 Linux 开发环境。其他文件可能分别落在：
+用户应当感觉 Claude 容器是一台**有状态、可随意修改的 Linux**：装软件、改配置、写文件，下次进入还在。具体要求：
 
-| 内容 | 典型位置 |
+1. **启停仍由 Docker 控制**，但状态**不依赖容器常驻**：容器可以随时被删除、重建。
+2. **状态以宿主文件保存**，Docker 本身消失（重装、清理镜像和卷、换 Docker 发行版）也能恢复。
+3. **实时落盘**：用户随时可能退出，进程、网络、宿主都可能意外中断，不能依赖“退出时保存”或定时快照。
+4. **默认保存用户内容，必要时保存整个系统**：用户主要在 HOME 下工作，但对 `/etc`、apt 安装等系统修改也要保留，并尽量轻量。
+5. 重建环境、定时快照等命令可以提供，但属于次要能力。
+
+## 2. 参考：Claude-Cage 如何保存环境
+
+参考 [Lee-xeo/Claude-Cage](https://github.com/Lee-xeo/Claude-Cage)（阅读版本 `469ea36`，2026-11-22）。它的两种运行模式用了两种持久化方式。
+
+### 本地模式：整台 Debian 虚拟机 + 持久虚拟磁盘
+
+- 不是容器。用内嵌的 [Lima](https://lima-vm.io/) 运行一台完整的 Debian 13 虚拟机，后端分别是 macOS 的 Virtualization.framework、Intel Mac/Linux 的 QEMU（KVM），以及 Windows 的 WSL2/HCS（`internal/vm/driver_*.go`）。
+- 首次安装下载并校验 Debian 13 基础镜像（约 320–325 MiB），再创建虚拟磁盘。磁盘容量上限 24 GiB，**按实际写入增长**（`internal/vm/lima.go` 中的 `.disk` 设置）。
+- **保存位置**：
+  - 数据根默认是 `~/.claude-cage`，可用 `CLAUDE_CAGE_CONFIG` 修改；账户、设置、代理配置也放在这里。
+  - 虚拟机实例目录是 `~/.claude-cage/state/lima/<实例>/`（`internal/cli/app.go` 的 `LimaHome`，可用 `AGENT_VM_LIMA_HOME` 覆盖），其中是 Lima 的基础磁盘和差异磁盘。
+  - 环境存储可以迁移到其他磁盘。迁移后用存储标记文件确认磁盘仍是原来那块，磁盘未连接时提示“环境存储需要恢复”，**不会新建环境覆盖原状态**（`internal/cage/storage.go`）。
+- **如何维持状态**：整个 Linux 根文件系统就在这块虚拟磁盘上。客机内的每次写入都直接写入宿主上的磁盘文件，掉电后由客机文件系统的日志恢复一致性。更新或重装 Cage、重启电脑都不会更换环境或清空磁盘。
+- 旧环境不再使用时，把它的磁盘整体**移动**（不复制、不删除）到 `state/guests-removed/<系统>-<版本>-<时间>`，并附 `manifest.json`。任一文件移动失败就全部放回原处。
+
+### 云端模式：常驻容器 + 私有容器引擎
+
+- 在服务器上运行私有的 rootless Docker 引擎，`--data-root=~/.claude-cage/container-engine/data`（`deploy/cloud/cage-container-engine.service`）。这样容器的可写层就落在自己的数据目录下，不依赖系统 Docker。
+- 工作环境是**常驻容器**，容器内运行 systemd（需要用户命名空间内的 `SYS_ADMIN` 和 `/dev/fuse`、`/dev/net/tun`）。文档明确说明：“已有容器的整个可写文件系统都属于持久数据”。
+- 容器**禁止**任何 bind mount 和 volume（`internal/containerenv/engine.go`），状态完全依靠可写层。
+- 重建或换机时把停止的旧容器改名为 `<名称>-archive-<id>` 归档，保留回滚能力（`internal/containerenv/reset.go`）。
+
+### 对本项目的启发
+
+| Claude-Cage 的做法 | 是否适合本项目 | 原因 |
+| --- | --- | --- |
+| 整机虚拟机 + 增量虚拟磁盘 | 不采用 | 本项目定位是 Docker 内运行；内嵌虚拟机需要逐平台维护虚拟化后端 |
+| 私有引擎 + 常驻容器可写层 | 不采用 | 状态仍依赖容器常驻；私有引擎在 macOS 上还需要额外的 Linux 虚拟机；systemd 需要额外权限 |
+| 状态目录有标记，不覆盖缺失的存储 | **采用** | 外接盘未挂载、路径写错时，宁可报错，也不能静默新建空环境 |
+| 重置时移动归档，而不是删除 | **采用** | 重置可以回滚，且不需要复制大文件 |
+| 固定 digest 的 Debian 基础镜像 | **采用** | 初始化结果可复现 |
+
+## 3. 方案对比
+
+| 方案 | 实时性 | Docker 消失后 | 空间 | 隔离代价 | 结论 |
+| --- | --- | --- | --- | --- | --- |
+| A. 保留容器可写层（原方案） | 实时 | 丢失 | 只存差异 | 无 | 依赖容器常驻，不满足目标 1、2 |
+| B. 具名卷 | 实时 | 丢失 | 按目录 | 无 | 卷在 Docker 存储里，不满足目标 2 |
+| C. 定时快照或同步到宿主 | 有窗口期 | 可恢复 | 快照大小 | 无 | 不满足目标 3 |
+| D. 容器内 overlayfs，upper 层放宿主 | 实时 | 可恢复 | 只存差异 | 需要 `CAP_SYS_ADMIN` 或 FUSE | 削弱隔离，不采用 |
+| E. ext4 镜像文件挂到 loop 设备 | 实时 | 可恢复 | 稀疏文件 | 需要特权挂载 loop 设备 | 同上 |
+| **F. 可变目录 bind mount 到宿主状态目录** | **实时** | **可恢复** | 完整复制一次（约 1 GB） | **无新增权限** | **采用** |
+
+方案 F 用一次性的空间开销，换取实时、跨 Docker 生命周期、不增加容器权限这三点。
+
+## 4. 方案：可变目录全部放在宿主状态目录
+
+### 4.1 目录布局
+
+每个实例一个状态目录，放在项目下的 `state/<实例>/`（加入 `.gitignore`），可用 `state.dir` / `--state-dir` 改到其他磁盘：
+
+```text
+state/<实例>/
+├── .caged-state          # 标记：实例 ID、布局版本、初始化所用镜像 digest、创建时间
+├── lifecycle.lock        # 启停、初始化、重置、快照互斥
+├── system/               # 系统层，重置时整体归档
+│   ├── etc/   → /etc
+│   ├── usr/   → /usr     （merged-usr：/bin /sbin /lib 都是指向 /usr 的符号链接，一并覆盖）
+│   ├── var/   → /var     （dpkg/apt 数据库，必须与 /usr 一同保存）
+│   ├── opt/   → /opt
+│   ├── srv/   → /srv
+│   └── root/  → /root
+├── home/      → /home/claude   # 用户层：claude-user 的 HOME
+├── browser/   → 浏览器容器的 /config   # Chromium 资料：登录、Cookie、历史，700 权限
+├── archive/<时间>/        # reset 移入的旧 system/（或 home/、browser/），附 manifest.json
+└── snapshots/<时间>.tar.zst
+```
+
+不持久化的目录和真实 Linux 重启后的表现一致：`/proc`、`/sys`、`/dev`、`/run`、`/tmp` 由 Docker 或 tmpfs 提供。Docker 管理的 `/etc/hosts`、`/etc/hostname`、`/etc/resolv.conf` 会叠加在 `/etc` 的挂载之上，所以 DNS 仍由网关控制。
+
+`system`、`home`、`browser` 分开存放，可以分别重置和备份。
+
+只持久化 `/home/claude`，不持久化整个 `/home`。原因是 Linux 宿主上的 workspace 通常在 `/home/<用户>/…`，并按原路径挂载进容器：如果 `/home` 整体是持久化挂载，Docker 会在 `state/<实例>/home` 里为这些 workspace 建出 root 属主的空挂载点目录。同理，workspace 也不能位于 `/var`、`/opt`、`/srv`、`/root` 之下，配置校验会拒绝。
+
+Claude 的登录凭证**单独存放**，不放在 `state/` 里：
+
+```text
+config/claude/<实例>/  → /home/claude/.claude   （叠加在 home 的挂载之上，700 权限）
+```
+
+- 凭证最敏感，放在本来就是 `700`、专门存私有配置的 `config/` 中，不和约 1 GB 的状态一起打包或复制。
+- 体积小，备份和迁移可以只拷这一个目录。
+- `reset --home`，甚至 `destroy` 整个环境之后，仍然可以保持登录，不必重新授权。
+- `CLAUDE_CONFIG_DIR=/home/claude/.claude`，原本在 HOME 外层的 `.claude.json` 也放在这里。
+- 按实例分目录，两个实例不会同时写同一份凭证。`claude.config_dir` 仍然可以覆盖这个位置。
+
+### 4.2 首次初始化（seed）
+
+`./cage up` 发现实例从未初始化时：
+
+1. 取得 `lifecycle.lock`。
+2. **能力检测**：在状态目录里用临时容器检查属主（任意 UID/GID）、`setuid`、符号链接、硬链接、权限位能否被如实保存。任一项不支持就停止并说明原因，**不会悄悄降级**成只保存 HOME（见 §8）。
+3. 用 Claude 镜像运行一次初始化容器（root、无网络），执行 `tar --numeric-owner --xattrs -cpf - etc usr var opt srv root home`，解包到 `state/<实例>/.seed-<id>/`。
+4. 校验完成后，原子改名为 `system/` 和 `home/`，**最后**写入 `.caged-state`。中断后只会留下 `.seed-*`，下次清理后重来，不会出现初始化到一半的环境。
+
+### 4.3 每次启动
+
+容器仍然是可丢弃的外壳（继续使用 `--rm`），每次 `./cage up` 都重新创建：
+
+```text
+--mount type=bind,src=state/<实例>/system/etc,dst=/etc     （usr、var、opt、srv、root 同理）
+--mount type=bind,src=state/<实例>/home,dst=/home/claude
+--mount type=bind,src=config/claude/<实例>,dst=/home/claude/.claude
+--mount type=bind,src=<项目>/caged,dst=/caged-runtime/caged,readonly
+--mount type=bind,src=<项目>/containers/claude/entrypoint.sh,dst=/caged-runtime/entrypoint,readonly
+```
+
+- **标记必须存在**：状态目录存在但 `.caged-state` 缺失、实例 ID 不符，或配置里记录过这个实例但目录不见了，都拒绝启动，提示“环境存储不可用”，绝不自动重新初始化（借鉴 Claude-Cage 的存储标记）。
+- **身份**：`claude-user` 的 UID/GID 跟随宿主（PUID/PGID）。entrypoint 用 `usermod` 修改的 `/etc/passwd` 位于持久化的 `/etc` 中，所以会保留。PUID 变化时，只在属主不一致的情况下 chown `/home/claude`。
+- **启动器自己的代码不进入状态目录**：entrypoint、环境探针、检查程序从项目目录只读挂载到 `/caged-runtime`，用 `PYTHONPATH=/caged-runtime` 运行。这样用户（包括容器内 root）无法修改它们，项目更新后下次启动就生效。探针依赖状态里的 `python3`；用户如果弄坏了 `python3`，探针会失败，网关随即断网（失败即断网），不会放行。
+- 网关不变：节点凭证和控制密钥仍只放在 tmpfs，不持久化。
+- 浏览器只持久化资料目录：`state/<实例>/browser` 挂载到浏览器容器的 `/config`；浏览器镜像本身的系统仍是临时的。这里有一个坑：Chromium 的 `SingletonLock` 记录了主机名，而现在网关容器每次重建主机名都会变，新主机名会让 Chromium 判定资料“正被另一台电脑使用”而拒绝打开。所以要做两件事：网关容器使用固定主机名 `caged-<实例>`（两个应用共享它的网络命名空间和主机名）；浏览器启动前清理残留的 `Singleton*` 锁文件。
+
+### 4.4 实时性与一致性
+
+- 容器内的写入就是对宿主文件的写入，不需要“保存”这一步，也不存在窗口期。可靠程度和一台普通 Linux 机器相同：宿主突然断电时，可能丢失最后几秒尚在页缓存里的数据。
+- `./cage down` 停止容器后，再对状态目录执行一次 `sync`，缩短这个窗口。
+- 容器被 kill、进程消失、网络断开都不影响已经写入的文件。下次 `./cage up` 重新挂载同一份状态即可。
+
+### 4.5 各类内容保存在哪里
+
+二进制和软件：
+
+| 安装方式 | 实际写入位置 | 状态目录 |
+| --- | --- | --- |
+| `apt install` | 程序在 `/usr/bin`、`/usr/lib`，包数据库在 `/var/lib/dpkg` | `system/usr` + `system/var` |
+| root 执行 `npm i -g`（包括 Claude Code 升级） | `/usr/local/lib/node_modules`、`/usr/local/bin` | `system/usr` |
+| `pip install --user`、`pipx`、`cargo install` | `~/.local`、`~/.cargo` | `home` |
+| nvm、mise、Linux Homebrew 等用户级工具 | `~/.nvm`、`~/.local/share/mise` 等 | `home` |
+| 手动下载的二进制 | `/usr/local/bin`、`/opt/<软件>`、`~/bin` | `system/usr`、`system/opt`、`home` |
+
+两点约束：
+
+- **`/usr` 与 `/var` 必须作为一个整体。** 文件在 `/usr`，“装了什么”的记录在 `/var/lib/dpkg`。只保存其中一个，apt 就会认为系统损坏。所以两者同属 `system/`，备份、归档、回滚都整体进行，不拆开。
+- **merged-usr 布局**下 `/bin`、`/sbin`、`/lib` 都是指向 `/usr` 的符号链接，保存 `/usr` 就覆盖了全部系统二进制。
+
+下载与数据：
+
+| 内容 | 位置 | 是否保留 |
+| --- | --- | --- |
+| HOME 下的一切：下载的文件、模型、数据集、`~/.cache`、`~/.npm`、pip 缓存 | `/home/claude/…` | 保留 |
+| workspace 项目文件 | 宿主原路径（直接挂载） | 保留 |
+| apt 缓存、`/var/tmp` | `/var` | 保留 |
+| 浏览器登录、Cookie、历史 | 浏览器 `/config` | 保留 |
+| `/tmp` | tmpfs | **不保留**，和真实 Linux 重启一样（Debian 13 的 `/tmp` 默认就是 tmpfs）。需要在文档和 `./cage claude` 的提示中写明 |
+
+## 5. 命令语义
+
+| 命令 | 行为 |
 | --- | --- |
-| Shell、Git、SSH 与其他工具配置 | `$HOME`，本项目为 `/config` |
-| 用户安装的 Python、Node、Rust 工具与缓存 | `/config/.local`、`.npm`、`.cargo` 等，具体取决于安装方式 |
-| Linux Homebrew 与其安装的软件 | `/home/linuxbrew/.linuxbrew` |
-| apt 安装的软件、包数据库与系统配置 | `/usr`、`/var/lib/dpkg`、`/etc` 等 |
+| `./cage up` | 未初始化则 seed；然后挂载状态启动，网络检查流程不变 |
+| `./cage down` | 停止并删除容器，状态目录保留，并执行 `sync` |
+| `./cage reset [--home] [--browser]` | 停止后把 `system/` **移动**到 `archive/<时间>/`（同盘上是改名，瞬间完成），再从当前镜像重新 seed 系统层。HOME 和浏览器资料默认保留，`--home`、`--browser` 时分别一并归档。Claude 凭证在 `config/` 中，任何 reset 都不会触及 |
+| `./cage archive list\|restore <时间>\|prune <时间>` | 查看、回滚、删除归档；删除需要输入实例名确认 |
+| `./cage snapshot` | `docker pause` 应用容器，打包 `system/` 和 `home/` 为 `snapshots/<时间>.tar.zst`，再 `unpause`。可用宿主 cron 或 systemd timer 定时调用 |
+| `./cage restore <快照>` | 停止后把当前状态归档，再从快照恢复 |
+| `./cage destroy` | 删除整个实例状态。文件属主有 root，所以通过容器执行；需要输入实例名确认 |
 
-Docker 容器的可写层在普通停止、再次启动之间保留。删除容器才会删除这层数据；`--rm` 会让进程退出自动触发删除。因此，日常操作应复用原容器，并把明确要跨重建保留的数据放到卷中。[Docker 容器运行与生命周期](https://docs.docker.com/reference/cli/docker/container/run/)
+升级方式和真实机器一样：在容器里执行 `apt-get update && apt-get upgrade`（新 seed 的环境没有软件包索引，第一次安装任何包之前也要先 `apt-get update`）、`npm i -g @anthropic-ai/claude-code@<版本>`，或者用 `./cage upgrade claude` 代为执行。**修改 Dockerfile 只影响新实例和 `reset`**，已有实例以状态目录为准。
 
-## 建议的服务语义
+## 6. 各类故障如何恢复
 
-三个容器作为同一个实例保留，普通启停不再删除：
+| 情况 | 恢复方式 | 数据 |
+| --- | --- | --- |
+| 用户退出 Shell 或 Claude | 无需操作 | 全部保留 |
+| 进程崩溃、容器被删除或 kill | `./cage up` | 全部保留 |
+| 网络断开、节点失效 | 网关断网，恢复后 `./cage resume` | 全部保留 |
+| 宿主重启 | `./cage up` | 全部保留（掉电时可能丢最后几秒） |
+| Docker 重装，镜像、卷、缓存全部丢失 | `./cage up`：重建镜像，挂载原状态 | 全部保留 |
+| 外接盘未挂载、状态路径写错 | 拒绝启动并提示，接回磁盘后再 `up` | 不会被覆盖 |
+| 系统被折腾坏 | `./cage reset`，必要时 `archive restore` | HOME 保留，旧系统层可回滚 |
+| 换一台机器 | 复制 `state/<实例>/`（同为 Linux、同一 CPU 架构） | 全部保留 |
 
-| 操作 | 目标行为 |
+## 7. 基础镜像
+
+- **已确认**：使用固定 digest 的 **Debian 13（trixie）slim**。当时与 Ubuntu 26.04 LTS 的比较：
+
+  | 方面 | Debian 13 | Ubuntu 26.04 LTS |
+  | --- | --- | --- |
+  | snap | 没有 snap，`apt install chromium`、`firefox` 是真正的 deb 包 | 这几个包是指向 snap 的过渡包，Docker 里不能运行 snap，**直接装不上** |
+  | Node.js | 官方 `node:24-trixie-slim` 就是 Debian，复制过来的二进制与系统库完全一致 | 可以用（glibc 向后兼容），但不完全一致 |
+  | 生态 | 一般 | 更好，很多第三方软件只提供 Ubuntu 的 PPA 或安装说明 |
+  | 支持周期 | 约 3 年，加 LTS 共 5 年 | 标准 5 年 |
+
+  推荐 Debian，主要原因是 snap：这个环境会长期保留，在里面装浏览器（比如跑 Playwright 测试）是常见需求。
+- Node.js 通过多阶段构建，从固定版本的官方 `node:24-trixie-slim` 复制 `/usr/local` 下的 node、npm、corepack，不添加第三方 apt 源。Claude Code 继续使用固定版本。
+- 镜像只用于 seed 和提供容器外壳，内容被挂载覆盖，因此不再把运行时代码 COPY 进镜像。
+- 预计每个实例的初始占用约 0.8–1.2 GB，主要是 `/usr`。
+
+## 8. 风险与限制
+
+1. **只支持 Linux/WSL**（已确认）：Linux（包括 WSL 的 ext4）上 bind mount 能完整保留属主、setuid、硬链接。macOS 不在支持范围内，也不做替代存储。§4.2 的能力检测仍然保留，检测不通过就明确报错。
+2. **宿主上出现 root 属主的文件**：`system/` 下的文件属主是 root，宿主的普通用户不能直接删除或修改，所以由 `./cage destroy` 和 `archive prune` 通过容器处理。备份时需要 `sudo tar --numeric-owner`，或使用 `./cage snapshot`。
+3. **空间**：每个实例完整复制一份系统，且不是增量存储。宿主文件系统支持 reflink（btrfs、XFS、APFS）时，snapshot 和 archive 可以改用 `cp --reflink` 优化。
+4. **持久化的系统也会持久化用户的破坏**：例如修改 `/etc/profile`、替换 `python3`。网络边界由网关的命名空间和防火墙保证，与容器内系统无关；探针代码只读挂载，失败时断网。因此安全边界不变，最坏情况只是环境不可用，可以 `reset`。
+6. **sudo（已确认）**：默认给 `claude-user` 免密码 sudo，`claude.sudo: false` 可以关闭。
+   - 理由：这是一台可以随意修改的长期环境，Claude 经常需要 `apt install`。
+   - 网络边界不受影响：容器内 root 没有 `NET_ADMIN`，改不了网关防火墙；改 DNS 也会被公网 53/853 的拦截规则挡住。
+   - 能改的只有 `system/`，弄坏了可以 `reset` 或从归档回滚。
+   - **代价**：环境探针以 root 运行，用私钥给检查结果签名。给了 sudo，Claude 或用户就能读到私钥，也能停掉探针。时区、语言等环境一致性检查会因此从防篡改降级为尽力而为，网络断开约束不受影响。
+   - 关闭 sudo 时，需要 root 就从宿主执行 `./cage shell --root`。
+   - “只允许 sudo apt”不提供：apt 可以安装任意 deb 并以 root 执行包里的脚本，实际上等于完整 root。
+5. **不提供 init/systemd**：服务的文件和配置会保留，但不会自动运行。Claude-Cage 用 systemd 需要额外权限，本方案不采用（见 §10）。
+
+## 9. 迁移与实现阶段
+
+### 迁移
+
+现有实例是 `--rm` 容器，系统层本来就不会保留，所以只需要迁移 Claude 登录状态：
+
+- 默认实例首次启动时，如果 `config/claude/<实例>/` 不存在而 `config/.claude` 存在，就把后者**移动**过去，登录状态不变。同一块盘上只是改名；失败时保持原样；
+- `CLAUDE_CONFIG_DIR` 改为 `/home/claude/.claude`，`HOME` 从 `/config` 改为 `/home/claude`；
+- 浏览器资料目前是临时的，没有需要迁移的内容。
+
+### 阶段 1：持久化主体
+
+- 状态目录布局、标记、锁、能力检测、原子 seed；
+- 挂载方案、`/caged-runtime` 只读运行时、HOME 迁移、Claude 凭证单独挂载；
+- 浏览器资料持久化、网关固定主机名、清理 Chromium 锁文件；
+- 新的基础镜像（按 §7 的确认结果）、sudo 开关；
+- `down` 时 `sync`。
+
+### 阶段 2：维护命令
+
+`reset`、`archive`、`snapshot`、`restore`、`destroy`、`upgrade claude`。
+
+### 阶段 3：按需扩展
+
+用户级自启动脚本。
+
+### 测试（集成测试使用独立实例，不连接真实节点）
+
+- 修改 `/etc`、`/usr/local/bin`，用本地 `.deb` fixture 执行 `dpkg -i`，在 HOME 写入文件后：`docker kill` → `up`，`down` → `up`，`docker rmi` 镜像 → `up`，三种情况都验证内容完整；
+- 写入过程中 `docker kill`，已完成的写入应全部存在；
+- 标记缺失、实例 ID 不符、状态目录不存在时拒绝启动；seed 中断后可以重来；
+- 能力检测：模拟不支持属主保存的目录时拒绝启动；
+- `reset` 保留 HOME、浏览器资料和 Claude 凭证，并可回滚；`snapshot`/`restore` 往返一致；
+- 浏览器登录后 `docker kill` 网关和浏览器，再 `up`，Cookie 仍在，Chromium 不报配置被占用；
+- 网络边界回归：现有 verify/audit 全部通过，探针运行时不可写。
+
+## 10. 决定记录
+
+| 问题 | 结论 |
 | --- | --- |
-| `./cage up`，首次启动 | 创建三个不带 `--rm` 的容器，完成网络与环境检查 |
-| `./cage up`，容器已停止 | 启动原 network，再启动原 browser、claude，重新取证后放行 |
-| `./cage up`，容器都在运行 | 核对归属、配置和网络关系，返回已有状态 |
-| `./cage down` | 先停两个应用，再停 network，保留容器、可写层和数据卷 |
-| `./cage shell` / `./cage claude` | 进入已有容器，不影响服务生命周期 |
-| 升级、改挂载或重建 | 独立的显式操作；先保存状态，再替换容器 |
-
-保留整组容器是因为应用使用 `--network container:<network ID>`。不能删掉 network 后仅创建一个同名容器，就认为旧应用会加入新网络空间。普通恢复保留原容器 ID；需要替换网关时，必须协调重新创建两个应用的网络绑定。
-
-网关停止后 tmpfs 中的节点参数和控制密钥会消失。恢复不能只执行三个裸 `docker start`：启动器仍需重新通过标准输入注入节点配置，初始化默认拒绝防火墙、监控密钥和限时许可，再重新注册两端环境探针。旧许可、旧就绪文件和旧探针响应都不能充当新一轮启动的证据。故障时应关闭业务出口并保留开发文件，不用删除容器来回滚。
-
-## 两层持久化
-
-第一层是保留容器本身。它能保住日常 Shell 修改、用户工具、apt 安装和其他可写层文件，满足停止后继续工作的需求。
-
-第二层是给明确的开发数据使用具名卷或绑定目录，避免未来正常重建应用镜像时丢失：
-
-| 挂载目标 | 建议保存方式 |
-| --- | --- |
-| Claude 完整 HOME `/config` | 每实例独立的具名卷，保留 Shell 配置、用户工具与缓存 |
-| `/config/.claude` | 保留已有项目 `config/.claude` 绑定，覆盖 HOME 卷中的同名子目录 |
-| `/home/linuxbrew/.linuxbrew` | 每实例独立的具名卷，保留 Linux Homebrew 与软件 |
-| workspace | 沿用原宿主绝对路径的绑定挂载 |
-
-浏览器现有 `/config` 匿名卷也应明确保留；如果希望其数据跨容器重建继续使用，再改成每实例独立具名卷。网关运行密钥继续放 tmpfs，不做持久化。
-
-Homebrew 的 Linux 默认前缀是 `/home/linuxbrew/.linuxbrew`，与 Mac 的 `/opt/homebrew` 不同，应在 Linux 容器中安装 Linux 版本。初次准备前缀目录和系统依赖可以由容器 root 完成，之后由 `claude-user` 安装软件。Homebrew 本身没有在这次改动中预装。[Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux)
-
-apt 等分布在系统目录中的安装仅靠 HOME 和 Homebrew 卷无法跨重建保留。稳定的系统依赖应逐步写进 Claude Dockerfile；临时探索安装依靠原容器可写层延续。涉及替换原容器时，应先将尚未固化的系统修改保存文件系统快照或记录为镜像构建步骤，不能静默覆盖。
-
-## 已有实例的迁移
-
-当前运行的实例仍带 `AutoRemove=true`，不能假定编辑启动脚本能改变它。迁移需要先保存 Claude 的可写层、整个 HOME、Homebrew 前缀（如已安装）和浏览器匿名卷，再创建新的持久化实例。`docker commit` 的文件系统快照不包含绑定挂载或卷的数据，这些要分别保留。[Docker commit](https://docs.docker.com/reference/cli/docker/container/commit/)
-
-迁移和升级应按以下顺序实现并测试：
-
-1. 校验实例归属，记录容器、卷和镜像身份，准备恢复清单。
-2. 在停止任何带 `--rm` 的旧容器之前，完成可写层快照与卷备份。
-3. 创建新的持久化服务并恢复应用文件；沿用 workspace 与 `.claude` 数据。
-4. 重新核对 UID/GID、时区、语言、DNS、代理出口和断网约束。
-5. 验证普通 `stop → start` 保持三个容器 ID、安装的软件和文件内容。
-6. 验证异常恢复与显式重建路径；备份不随一次成功启动自动删除。
-
-配置中的环境变量、端口、UID/GID 和挂载发生变化时，Docker 不能通过普通 `start` 修改原容器的创建参数。启动器应明确提示需要迁移或重建，不应为了应用配置变化自动丢弃开发环境。
+| 状态目录位置 | 项目内 `state/<实例>/`（已确认） |
+| Claude 凭证 | 单独存放在 `config/claude/<实例>/`，不随 `state/` 打包或重置（已确认） |
+| 浏览器登录与 Cookie | 持久化到 `state/<实例>/browser/`，与 Claude 系统层分开（已确认） |
+| macOS | 不支持系统级持久化，能力检测不通过就报错（已确认） |
+| 基础镜像 | Debian 13（trixie）slim，固定 digest（已确认，比较见 §7） |
+| sudo | 默认免密码 sudo，`claude.sudo: false` 可关闭（已确认，代价见 §8 第 6 条） |

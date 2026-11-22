@@ -22,6 +22,7 @@ class ProcessLifecycle(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='caged-workspace-')
         self.workspace = Path(self.temp.name).resolve()
         self.state = ROOT / 'config' / ('.fixture-' + uuid.uuid4().hex)
+        self.environments = tempfile.TemporaryDirectory(prefix='caged-state-')
         self.log = tempfile.TemporaryFile(mode='w+')
         with socket.socket() as server:
             server.bind(('127.0.0.1', 0))
@@ -33,7 +34,8 @@ class ProcessLifecycle(unittest.TestCase):
         if fail:env['CAGED_TEST_FAIL_CLAUDE']='1'
         result=subprocess.run([sys.executable, '-u', str(ROOT/'tests/fixtures/lifecycle_launcher.py'), action,
             '--settings',str(ROOT/'config.example/app.yaml'),'--port',str(self.port),'--instance',self.instance,
-            '--workspace',str(self.workspace),'--claude-config-dir',str(self.state)],
+            '--workspace',str(self.workspace),'--claude-config-dir',str(self.state),
+            '--state-dir',self.environments.name],
             env=env,stdin=subprocess.DEVNULL,stdout=self.log,stderr=subprocess.STDOUT,timeout=50)
         return result.returncode
 
@@ -52,6 +54,7 @@ class ProcessLifecycle(unittest.TestCase):
                 engine.stop_managed(name)
         self.log.close()
         self.temp.cleanup()
+        self.environments.cleanup()
         if self.state.exists():shutil.rmtree(self.state)
 
     def test_start_returns_and_all_three_containers_share_the_gateway(self):

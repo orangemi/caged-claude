@@ -8,4 +8,5 @@ COPY caged/runtime/checks/__init__.py caged/runtime/checks/environment.py /opt/c
 COPY containers/browser/rename-user.py /tmp/caged-rename-user.py
 RUN python3 /tmp/caged-rename-user.py && rm /tmp/caged-rename-user.py
 COPY containers/browser/network-policy.json /etc/chromium/policies/managed/caged-network.json
+COPY --chmod=755 containers/browser/init-profile-lock.sh /custom-cont-init.d/05-caged-profile-lock
 COPY --chmod=755 containers/browser/init-settings.sh /custom-cont-init.d/10-caged-settings

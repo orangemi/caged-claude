@@ -256,13 +256,13 @@ IPv6 的输入、转发、输出也默认拒绝，仅允许回环。IPv4 输入�
 
 `./cage shell` 与 `./cage claude` 共用 `caged/host/enter.py` 的所有权、网关和身份校验，默认执行 Claude 容器内的 `bash -l`；也可选择 browser 或 network。network 使用其已有的 `sh`。`--root` 只改变此次容器内 exec 的 UID/GID、HOME 和用户环境，普通应用仍以 `claude-user` 运行。分隔符 `--` 后的命令按参数数组传给 Docker，不经过宿主 Shell 二次展开。
 
-完整开发环境的持久化仍是后续生命周期调整，当前实现继续遵循本节的临时容器语义。拟议方案见 [有状态服务设计](stateful-service.md)。
+容器仍是 `--rm` 的临时外壳；Claude 环境与浏览器资料保存在宿主 `state/<实例>/`，每次启动重新挂载，见 [有状态环境设计](stateful-service.md)。
 
 ### 9.2 Workspace 与授权目录
 
-可选的 `workspace` 支持路径或路径列表，经过展开和规范化后，以相同绝对路径读写挂载到两个应用；首项是工作目录。设置缺省时不挂载任何 workspace，应用 HOME 都是 `/config`。不会递归修改 workspace 的属主，也不会隐式共享 Mac 主目录。镜像初始化、系统和网关私有目录不能被 workspace 覆盖。
+可选的 `workspace` 支持路径或路径列表，经过展开和规范化后，以相同绝对路径读写挂载到两个应用；首项是工作目录。设置缺省时不挂载任何 workspace。Claude 的 HOME 是 `/home/claude`，浏览器的是 `/config`。不会递归修改 workspace 的属主，也不会隐式共享 Mac 主目录。系统目录、持久化的状态挂载（`/var`、`/opt`、`/srv`、`/root`、`/home/claude`）和只读运行时 `/caged-runtime` 不能被 workspace 覆盖。
 
-Claude 状态默认绑定 `<项目>/config/.claude` 到容器 `/config/.claude`，并设置 `CLAUDE_CONFIG_DIR=/config/.claude`。这使凭证 `.credentials.json`、设置、会话/记忆，以及平时单独存放的 `.claude.json` 全部落在同一个持久化绑定中。不会自动复制 Mac Keychain；用户首次通过 `./cage claude` 登录。
+Claude 凭证默认绑定 `<项目>/config/claude/<实例>` 到容器 `/home/claude/.claude`，并设置 `CLAUDE_CONFIG_DIR=/home/claude/.claude`。这使凭证 `.credentials.json`、设置、会话/记忆，以及平时单独存放的 `.claude.json` 全部落在同一个持久化绑定中。不会自动复制 Mac Keychain；用户首次通过 `./cage claude` 登录。
 
 可选 `claude.config_dir` 只能指向本项目被忽略的 `config/` 下的子目录。状态目录权限为 `700`，必要的属主调整只限该专用目录。构建上下文使用白名单，私有配置和授权目录不会上传给镜像构建器。镜像的软件安装/拉取由 Docker 构建器完成，运行后的两个应用才使用共享网关的受控出口。
 
@@ -271,16 +271,17 @@ Claude 状态默认绑定 `<项目>/config/.claude` 到容器 `/config/.claude`�
 | 数据 | 保存位置 | 清理方式 |
 | --- | --- | --- |
 | 应用启动配置 | 项目 `config/app.yaml` | Git 忽略；会话结束后保留，修改后重启读取 |
-| Claude 授权、设置、会话与记忆 | 默认项目 `config/.claude` 绑定到容器 `/config/.claude` | `./cage down` 或重建容器后保留，不会因 `--rm` 删除 |
+| Claude 授权、设置、会话与记忆 | 默认项目 `config/claude/<实例>` 绑定到容器 `/home/claude/.claude` | `./cage down`、容器重建和环境 `reset` 后都保留 |
+| Claude 的系统与 HOME | `state/<实例>/system`、`state/<实例>/home`，分别绑定到 `/etc`、`/usr`、`/var`、`/opt`、`/srv`、`/root` 与 `/home/claude` | 实时写在宿主；容器删除、Docker 重装后保留 |
 | 明示 workspace 文件 | 原宿主绝对路径 | 两个应用访问同一份文件；宿主修改和容器修改互相可见 |
 | 代理配置快照 | 项目 `config/mihomo.yaml`，从 Mac 配置完整复制 | 权限 `600`、Git 忽略；会话结束后保留，不自动同步源文件 |
 | 选定节点参数 | 启动器内存，经标准输入传给网关 | 从项目快照读取，不额外写入其他项目文件、容器环境变量或镜像 |
 | 网关配置、控制密钥、核心日志 | 网关 `/run/caged` tmpfs | 网关容器删除后释放 |
 | 网关临时文件 | `/tmp` tmpfs | 容器删除后释放 |
-| 浏览器配置、登录状态、缓存、下载文件 | 容器可写层及镜像自动创建的临时匿名卷 | `--rm` 删除容器及其匿名卷后清理 |
+| 浏览器配置、登录状态、缓存、下载文件 | `state/<实例>/browser` 绑定到浏览器 `/config` | 实时写在宿主；容器删除后保留 |
 | 镜像与构建缓存 | Docker/OrbStack 镜像存储 | 作为安装产物保留，正常会话退出不删除 |
 
-浏览器本身的配置和缓存仍是临时的；只共享明示 workspace。Claude 额外持久化自己的状态目录。网关根文件系统只读，运行时写入限于 tmpfs。临时容器不表示运行期间完全没有磁盘写入，也不表示绑定文件会被自动删除。
+浏览器镜像本身的系统仍是临时的，只持久化 `/config` 资料；网关固定主机名为实例名，使 Chromium 的配置锁跨重启有效。Claude 的探针与 entrypoint 从项目只读挂载到 `/caged-runtime`，不在持久化状态中。网关根文件系统只读，运行时写入限于 tmpfs。临时容器不表示运行期间完全没有磁盘写入，也不表示绑定文件会被自动删除。
 
 后台服务启动成功后独立于启动终端存在；通过对应实例的 `./cage status`、`./cage down` 检查和结束。令牌有效期由 Claude 的认证机制管理，持久化文件不等于令牌永不过期。
 

@@ -30,8 +30,10 @@ def observe(settings_only=False):
     account = pwd.getpwnam(APP_USER)
     if account.pw_uid != os.getuid() or account.pw_gid != os.getgid():
         raise RuntimeError('Claude runtime identity differs from its fixed account')
-    if state != Path('/config/.claude') or Path.home() != Path('/config'):
+    if state != Path('/home/claude/.claude') or Path.home() != Path('/home/claude'):
         raise RuntimeError('Claude state is outside its configured persistent home')
+    if not os.path.ismount('/home/claude') or not os.path.ismount('/usr'):
+        raise RuntimeError('The persistent environment state is not mounted')
     with tempfile.TemporaryFile(dir=state) as check:
         check.write(b'caged-state-write-check')
     dns = None if settings_only else dns_checks()
