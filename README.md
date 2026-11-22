@@ -1,30 +1,29 @@
-# Caged Browser
+# Caged Claude
 
-在 OrbStack 中分别运行 Chromium、Claude Code 和 mihomo 网络网关。两个应用共用网关网络栈和环境配置，所有公网出口受同一套代理与防火墙约束。
+把 Claude Code 关进 Docker 运行，并把它的网络锁死：所有出站流量只能经过你指定的一个代理节点，节点不可用或检查不通过时直接断网，不会回退直连。
+
+- **隔离运行**：Claude Code 跑在独立容器里，只能看到显式挂载的 workspace 和自己的授权目录（`config/.claude`），看不到宿主的其他文件、Keychain 或 Docker socket。
+- **网络受限**：Claude 不拥有自己的网络，只共享 mihomo 网关容器的网络栈。网关默认拒绝一切流量，只放行到选定节点的连接；DNS 也经节点解析，IPv6、私网、元数据地址和公共 DNS 一律阻断。
+- **持续检查，失败即断网**：网关持续核对代理、防火墙、DNS 和出口国家，每次通过只发放一段有限期的内核放行许可（默认 90 秒），检查失败或超时，许可到期自动断网。
+- **配套浏览器**：同一网络里还有一个 Chromium，通过 `https://localhost:3002` 访问，用于登录授权或手动查看网页，出口和 Claude 完全一致。
 
 网络架构、DNS 路径、防火墙和生命周期的详细说明见 [实现原理](docs/implementation.md)。
 
 ```
-Chromium / Claude Code（各自独立容器，共享网络命名空间）
-  → 网络容器：TUN + DNS + 独立防火墙
+Claude Code / Chromium（各自独立容器，共享网关的网络命名空间）
+  → 网关容器：mihomo TUN + DNS + 默认拒绝防火墙 + 持续检查
   → 配置选择的 AnyTLS 节点
   → Internet
 ```
+
+> 项目最初叫 caged-browser，为了兼容已有实例和配置，代码内部的名称暂未改：默认实例名仍是 `caged-browser`，环境变量前缀仍是 `CAGED_BROWSER_`，容器标签仍是 `io.caged-browser.*`。
 
 ## 启动
 
 依赖：Docker（OrbStack、Docker Desktop 或 Linux Docker Engine）和 POSIX `sh`。宿主机不需要 Python 或 Ruby。
 
-所有入口脚本经 [containers/launcher/run.sh](containers/launcher/run.sh) 在一个 launcher 容器中运行 Python 启动器：挂载 Docker socket，项目目录按原路径读写挂载，`$HOME` 与当前目录只读挂载，用于读取配置和校验 workspace。首次运行会自动构建 launcher 镜像（只含依赖，代码直接挂载，改代码无须重建）。
-
-| 环境变量 | 作用 |
-| --- | --- |
-| `CAGED_MOUNTS` | 冒号分隔的额外只读目录，用于 `$HOME` 之外的 workspace 或配置文件 |
-| `CAGED_DOCKER_SOCK` | 指定 Docker socket；默认 `/var/run/docker.sock`，Linux 上会使用 `unix://` 形式的 `DOCKER_HOST` |
-| `CAGED_NATIVE=1` | 不用容器，直接用宿主机的 Python 3.9+ 运行（需要 PyYAML） |
-
 ```bash
-cd ~/Projects/caged-browser
+cd ~/Projects/caged-claude
 ./start
 ./status
 ./claude
@@ -33,6 +32,14 @@ cd ~/Projects/caged-browser
 # 需要停止整个实例时：
 ./stop
 ```
+
+所有入口脚本经 [containers/launcher/run.sh](containers/launcher/run.sh) 在一个 launcher 容器中运行 Python 启动器：挂载 Docker socket，项目目录按原路径读写挂载，`$HOME` 与当前目录只读挂载，用于读取配置和校验 workspace。首次运行会自动构建 launcher 镜像（只含依赖，代码直接挂载，改代码无须重建）。
+
+| 环境变量 | 作用 |
+| --- | --- |
+| `CAGED_MOUNTS` | 冒号分隔的额外只读目录，用于 `$HOME` 之外的 workspace 或配置文件 |
+| `CAGED_DOCKER_SOCK` | 指定 Docker socket；默认 `/var/run/docker.sock`，Linux 上会使用 `unix://` 形式的 `DOCKER_HOST` |
+| `CAGED_NATIVE=1` | 不用容器，直接用宿主机的 Python 3.9+ 运行（需要 PyYAML） |
 
 访问地址使用配置中的 UI 端口；示例为 https://localhost:3002。首次自签名证书提示由使用者在浏览器中确认。
 
@@ -227,7 +234,7 @@ CLAUDE_CONFIG_DIR=/config/.claude
 ## 验证
 
 ```bash
-# 纯单元测试：不启动 Docker，不需要节点或私有配置。
+# 纯单元测试：不启动 Docker，不需要节点或私有配置；宿主直接运行需要 PyYAML。
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests/unit -t . -v
 
 # 容器内隔离测试：本地 TCP/UDP/DNS 端口正向对照、代理失效和删除后的断网。
@@ -277,7 +284,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests/unit -t . -v
 ## 目录结构
 
 ```text
-caged-browser/
+caged-claude/
 ├── start / stop / status / claude  # 服务和 Claude 命令
 ├── shell                         # 进入容器或执行单条命令
 ├── caged/
@@ -290,7 +297,8 @@ caged-browser/
 ├── containers/
 │   ├── network/                  # 各镜像的 Dockerfile 与初始化文件
 │   ├── browser/
-│   └── claude/
+│   ├── claude/
+│   └── launcher/                 # 宿主入口脚本使用的 launcher 镜像与 run.sh
 ├── tests/
 │   ├── unit/                     # 无 Docker 的单元测试
 │   ├── integration/              # 隔离的 Docker 集成测试
