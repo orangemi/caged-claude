@@ -15,6 +15,7 @@ browser:
   # puid: host  # 可选，默认 host，使用启动者的 UID；可显式指定整数，例如 1000。
   # pgid: host  # 可选，默认 host，使用启动者的主 GID；可显式指定整数，例如 1000。
   # shm_size: 1g  # 可选，默认 1g。
+  # ui_scheme: http  # 可选，默认 http：从本机 http://localhost 访问网页桌面；https 使用镜像的自签名证书。
 
 # 整个 ports 块均可省略；内部端口不发布到 Mac。
 # ports:

@@ -104,7 +104,7 @@ def main(args):
                 keep_running = True
                 # The listener runs on the host; ./cage starts it from this plan.
                 hostbridge.write_plan(args, session.state, 'start' if args.host_bridge else 'stop')
-                print(f'Started network, browser and Claude in daemon mode. Open https://localhost:{args.port}; use ./cage claude to enter Claude, ./cage down to stop.', flush=True)
+                print(f'Started network, browser and Claude in daemon mode. Open {args.ui_scheme}://localhost:{args.port}; use ./cage claude to enter Claude, ./cage down to stop.', flush=True)
     finally:
         if not keep_running:
             session.close()

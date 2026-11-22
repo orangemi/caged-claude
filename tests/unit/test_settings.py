@@ -327,6 +327,51 @@ class Settings(unittest.TestCase):
         self.assertEqual(self.parse('--instance','other').claude_config_dir,ROOT/'config'/'claude'/'other')
         self.assertEqual(args.state_dir,ROOT/'state')
 
+    def test_browser_ui_defaults_to_http_and_publishes_only_the_chosen_port(self):
+        from caged.runtime.network.firewall import firewall_rules
+        args=self.parse()
+        self.assertEqual((args.ui_scheme,args.browser_ui_port),('http',3000))
+        self.assertEqual(runtime_policy(args)['browser_ui_port'],3000)
+        session=Session(args)
+        self.assertEqual(session.ui_publish(),f'127.0.0.1:{args.port}:3000')
+        request=session.ui_request(args.port)
+        self.assertEqual(request[-1],f'http://127.0.0.1:{args.port}/')
+        self.assertNotIn('-k',request)
+        rules=firewall_rules('203.0.113.1',443,ui_port=args.browser_ui_port)
+        self.assertIn('-A INPUT -p tcp --dport 3000 -j ACCEPT',rules)
+        self.assertIn('-A OUTPUT -p tcp --sport 3000 -m conntrack --ctstate ESTABLISHED -j ACCEPT',rules)
+        self.assertNotIn('3001',rules)
+        secure=self.parse('--ui-scheme','https')
+        self.assertEqual(secure.browser_ui_port,3001)
+        self.assertEqual(Session(secure).ui_publish(),f'127.0.0.1:{secure.port}:3001')
+        self.assertIn('-k',Session(secure).ui_request(secure.port))
+        self.assertEqual(Session(secure).ui_request(secure.port)[-1],f'https://127.0.0.1:{secure.port}/')
+        self.assertNotIn('--dport 3000',firewall_rules('203.0.113.1',443,ui_port=3001))
+        self.assertEqual(self.parse(env={'CAGED_CLAUDE_UI_SCHEME':'https'}).ui_scheme,'https')
+        with self.assertRaises(ValueError):
+            firewall_rules('203.0.113.1',443,ui_port=8080)
+        for flags in (('--ui-scheme','ftp'),('--controller-port','3000'),('--debug-port','3001')):
+            with self.assertRaises(ConfigError,msg=flags):
+                self.parse(*flags)
+        self.data['browser']['ui_scheme']=['http']
+        self.write()
+        with self.assertRaises(ConfigError):
+            self.parse()
+
+    def test_existing_gateway_must_publish_the_chosen_ui_port(self):
+        args=self.parse()
+        session=Session(args)
+        policy=dict(session.policy)
+        state={'Id':'gateway-id','Config':{'Labels':{'io.caged-claude.session':'s'}},
+               'NetworkSettings':{'Ports':{'3000/tcp':[{'HostIp':'127.0.0.1','HostPort':str(args.port)}]}}}
+        session.use_network({'policy':policy},state)
+        self.assertEqual(session.network_container_id,'gateway-id')
+        stale={**state,'NetworkSettings':{'Ports':{'3001/tcp':[{'HostIp':'127.0.0.1','HostPort':str(args.port)}]}}}
+        with self.assertRaisesRegex(engine.CageError,'loopback port'):
+            Session(args).use_network({'policy':policy},stale)
+        with self.assertRaisesRegex(engine.CageError,'browser_ui_port'):
+            Session(args).use_network({'policy':{**policy,'browser_ui_port':3001}},state)
+
     def test_host_bridge_is_on_by_default_and_can_be_turned_off(self):
         args=self.parse(env={'CAGED_HOST_USER':'alice'})
         self.assertIs(args.host_bridge,True)

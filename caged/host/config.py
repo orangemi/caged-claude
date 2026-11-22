@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import yamlfile
 from .paths import ROOT
+from caged.shared.policy import BROWSER_UI_PORTS
 DEFAULT_SETTINGS = ROOT / 'config' / 'app.yaml'
 PREFIX = 'CAGED_CLAUDE_'
 # Optional operational defaults; node, timezone and policy choices stay explicit.
@@ -24,6 +25,7 @@ DEFAULTS = {
     'puid': 'host',
     'pgid': 'host',
     'shm_size': '1g',
+    'ui_scheme': 'http',
     'port': 3002,
     'controller_port': 9090,
     'mixed_port': 17890,
@@ -61,6 +63,7 @@ FIELDS = {
     'puid': ('browser.puid', 'PUID'),
     'pgid': ('browser.pgid', 'PGID'),
     'shm_size': ('browser.shm_size', 'SHM_SIZE'),
+    'ui_scheme': ('browser.ui_scheme', 'UI_SCHEME'),
     'port': ('ports.ui', 'PORT'),
     'controller_port': ('ports.controller', 'CONTROLLER_PORT'),
     'mixed_port': ('ports.mixed', 'MIXED_PORT'),
@@ -204,9 +207,15 @@ def resolve(argv=None, environ=None):
         raise ConfigError('expected_country must be a two-letter country code, null, or any')
     for name in ('port', 'controller_port', 'mixed_port', 'debug_port', 'browser_probe_port', 'claude_probe_port'):
         setattr(args, name, integer(getattr(args, name), name, 1, 65535))
-    internal = [args.controller_port, args.mixed_port, args.debug_port, args.browser_probe_port, args.claude_probe_port, 53, 3001]
+    if not isinstance(args.ui_scheme, str) or args.ui_scheme not in BROWSER_UI_PORTS:
+        raise ConfigError('browser.ui_scheme must be http or https')
+    args.browser_ui_port = BROWSER_UI_PORTS[args.ui_scheme]
+    # The desktop image listens on both UI ports internally, whichever is published.
+    internal = [args.controller_port, args.mixed_port, args.debug_port, args.browser_probe_port, args.claude_probe_port,
+                53, *BROWSER_UI_PORTS.values()]
     if len(set(internal)) != len(internal):
-        raise ConfigError('Controller, mixed and debug ports must be distinct and cannot use DNS 53 or browser HTTPS 3001')
+        raise ConfigError('Controller, mixed, debug and probe ports must be distinct and cannot use DNS 53 '
+                          'or the browser UI ports 3000/3001')
     for name in ('monitor_tick', 'monitor_interval', 'monitor_lease', 'monitor_probe_timeout', 'monitor_retry_initial', 'monitor_retry_max'):
         setattr(args, name, integer(getattr(args, name), name, 1, 3600))
     if args.monitor_interval < args.monitor_tick or args.monitor_lease < args.monitor_interval + args.monitor_probe_timeout + 2 * args.monitor_tick:
@@ -319,7 +328,7 @@ def runtime_policy(args):
     names = ('node', 'expected_country', 'dns_upstream', 'timezone', 'locale', 'language',
              'languages', 'controller_port', 'mixed_port', 'debug_port', 'browser_probe_port', 'claude_probe_port',
              'monitor_tick', 'monitor_interval', 'monitor_lease', 'monitor_probe_timeout',
-             'monitor_retry_initial', 'monitor_retry_max', 'puid', 'pgid')
+             'monitor_retry_initial', 'monitor_retry_max', 'puid', 'pgid', 'browser_ui_port')
     result = {name: getattr(args, name) for name in names}
     # [address, port] of the host bridge's TCP listener, the gateway's only
     # direct (non-node) destination; None unless the tcp transport is active.

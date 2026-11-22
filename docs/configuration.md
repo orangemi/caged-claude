@@ -43,6 +43,7 @@ config/mihomo.yaml   # mihomo 节点和凭证
 | `browser.language` | `CAGED_CLAUDE_LANGUAGE` | `--language` |
 | `browser.puid` / `browser.pgid` | `CAGED_CLAUDE_PUID` / `CAGED_CLAUDE_PGID` | `--puid` / `--pgid` |
 | `browser.shm_size` | `CAGED_CLAUDE_SHM_SIZE` | `--shm-size` |
+| `browser.ui_scheme` | `CAGED_CLAUDE_UI_SCHEME` | `--ui-scheme` |
 | `ports.ui` | `CAGED_CLAUDE_PORT` | `--port` |
 | `ports.controller` | `CAGED_CLAUDE_CONTROLLER_PORT` | `--controller-port` |
 | `ports.mixed` | `CAGED_CLAUDE_MIXED_PORT` | `--mixed-port` |
@@ -73,11 +74,13 @@ CAGED_CLAUDE_TIMEZONE=Asia/Tokyo CAGED_CLAUDE_PORT=3102 ./cage up --port 3103
 
 DoH 上游目前要求带路径的 HTTPS 公网 IPv4 URL，例如 `https://1.1.1.1/dns-query`，由程序追加固定节点标识，避免额外的域名引导解析。
 
-UI 只绑定宿主回环。DNS 的 53 端口和上游桌面镜像的 HTTPS 3001 是内部协议端口，不作为用户偏好覆盖；其他三个内部服务端口可配置，需互不冲突。全局代理、IPv6 阻断和默认拒绝防火墙保持固定的隔离约束。
+UI 只绑定宿主回环。DNS 的 53 端口，以及上游桌面镜像的 3000（HTTP）和 3001（HTTPS），都是内部协议端口，不作为用户偏好覆盖；其他内部服务端口可配置，需互不冲突，也不能占用这三个端口。全局代理、IPv6 阻断和默认拒绝防火墙保持固定的隔离约束。
+
+`browser.ui_scheme` 选择网页桌面的协议，默认 `http`，访问地址是 `http://localhost:<ports.ui>`。网页桌面的剪贴板同步、视频解码（WebCodecs）、音频等功能需要浏览器的“安全上下文”，而浏览器把 `http://localhost` 和 `http://127.0.0.1` 也视为安全上下文。UI 又只绑定在回环地址上，所以 HTTP 不缺少这些功能，也不需要确认自签名证书。设为 `https` 时，改用镜像的 3001 端口和自签名证书，访问地址变成 `https://localhost:<ports.ui>`。两种方式下，网关都只发布、只放行所选的那一个端口。
 
 | 端口设置 | 默认值 | 实际用途 |
 | --- | --- | --- |
-| `ports.ui` | `3002` | Mac 上访问网页桌面的 HTTPS 入口；唯一发布到宿主的端口 |
+| `ports.ui` | `3002` | 宿主上访问网页桌面的入口（默认 HTTP）；唯一发布到宿主的端口 |
 | `ports.controller` | `9090` | 容器内 mihomo 控制 API，启动器和审计用它核对模式与选定节点 |
 | `ports.mixed` | `17890` | 受随机密码保护的 HTTP/SOCKS 入口；密码只在网关私有 tmpfs，应用不能借它绕过暂停 |
 | `ports.debug` | `9222` | 容器内 Chromium DevTools，浏览器检查用它读取策略、时区、语言和出口 |

@@ -3,7 +3,13 @@ import json
 import os
 
 POLICY_ENV = 'CAGED_CLAUDE_POLICY'
-BROWSER_HTTPS_PORT = 3001  # The upstream desktop image's HTTPS service port.
+# The upstream desktop image serves its web UI on both ports inside the
+# container. Only the one chosen by browser.ui_scheme is published and allowed
+# through the gateway firewall. http is the default: browsers treat
+# http://localhost as a secure context, and the UI is only bound to loopback.
+BROWSER_HTTP_PORT = 3000
+BROWSER_HTTPS_PORT = 3001  # self-signed certificate
+BROWSER_UI_PORTS = {'http': BROWSER_HTTP_PORT, 'https': BROWSER_HTTPS_PORT}
 APP_USER = 'claude-user'
 BROWSER_DNS_POLICIES = {'DnsOverHttpsMode': 'off', 'BuiltInDnsClientEnabled': False}
 

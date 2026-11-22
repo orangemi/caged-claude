@@ -2,7 +2,6 @@
 import json
 from . import docker as engine, stateful
 from .errors import CageError
-from caged.shared.policy import BROWSER_HTTPS_PORT
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -93,7 +92,7 @@ def run_audit(session):
                 'Browser can administer the gateway without authentication or has network capabilities')
         ports = gateway_state['NetworkSettings']['Ports']
         published = {port: values for port, values in ports.items() if values}
-        ui_service = f'{BROWSER_HTTPS_PORT}/tcp'
+        ui_service = f'{session.args.browser_ui_port}/tcp'
         require(list(published) == [ui_service]
                 and all(binding['HostIp'] == '127.0.0.1' for binding in published[ui_service]),
                 'A management port is publicly published')

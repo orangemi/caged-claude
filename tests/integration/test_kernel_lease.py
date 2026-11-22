@@ -32,10 +32,10 @@ class KernelLease(unittest.TestCase):
             docker('run','-d','--rm','--name',sink,'--network',network,'--cap-drop','ALL','--entrypoint','python3',IMAGE,'-u','-c',script('lease_server.py'))
             target = docker('inspect',sink,'--format','{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}').stdout.strip()
             docker('run','-d','--rm','--name',gateway,'--network',network,'--cap-add','NET_ADMIN',
-                   '-p',f'127.0.0.1:{port}:3001','--entrypoint','sleep',IMAGE,'infinity')
+                   '-p',f'127.0.0.1:{port}:3000','--entrypoint','sleep',IMAGE,'infinity')
             docker('exec',gateway,'ip','link','set','eth0','name','caged0')
             docker('exec','-d',gateway,'python3','-u','-c',script('lease_server.py'))
-            setup = "from caged.runtime.network import lease as g;from caged.runtime.network.firewall import command,firewall_rules;g.ROOT.mkdir(exist_ok=True);g.initialize();command(['iptables-restore'],data=firewall_rules('203.0.113.1',443))"
+            setup = "from caged.runtime.network import lease as g;from caged.runtime.network.firewall import command,firewall_rules;g.ROOT.mkdir(exist_ok=True);g.initialize();command(['iptables-restore'],data=firewall_rules('203.0.113.1',443,ui_port=3000))"
             docker('exec',gateway,'python3','-c',setup)
             docker('run','-d','--rm','--name',client,'--network','container:'+gateway,'--cap-drop','ALL','--entrypoint','sleep',IMAGE,'infinity')
             docker('exec',gateway,'python3','-c',"from caged.runtime.network.lease import renew;renew(5)")
@@ -52,7 +52,7 @@ class KernelLease(unittest.TestCase):
                                 'Reusing a diagnostic UDP tuple must not inherit its outbound permit')
             forbidden = "import socket;s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_MARK,0x434101)"
             self.assertNotEqual(docker('exec',client,'python3','-c',forbidden,check=False).returncode,0)
-            ui = docker('exec',client,'python3','-c',"import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:3001',timeout=2).read().decode())")
+            ui = docker('exec',client,'python3','-c',"import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:3000',timeout=2).read().decode())")
             self.assertEqual(ui.stdout.strip(),'OK')
         finally:
             docker('rm','-f',client,gateway,sink,check=False)

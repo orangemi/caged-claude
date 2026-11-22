@@ -1,7 +1,7 @@
 """Static default-deny rules; expiring permits are maintained separately."""
 import ipaddress
 import subprocess
-from caged.shared.policy import BROWSER_HTTPS_PORT
+from caged.shared.policy import BROWSER_HTTP_PORT, BROWSER_UI_PORTS
 from .lease import LEASE, PROBE_MARK, CORE_MARK
 from .mihomo import TUN
 
@@ -31,11 +31,14 @@ def host_bridge_rules(host):
     return incoming, outgoing
 
 
-def firewall_rules(address, port, host=None):
+def firewall_rules(address, port, host=None, ui_port=BROWSER_HTTP_PORT):
+    """ui_port is the browser UI's port in the shared namespace (browser.ui_scheme)."""
     address = str(ipaddress.IPv4Address(address))
     port = int(port)
     if not 1 <= port <= 65535:
         raise ValueError('Invalid upstream port')
+    if ui_port not in BROWSER_UI_PORTS.values():
+        raise ValueError('Invalid browser UI port')
     host_in, host_out = host_bridge_rules(host)
     return f'''*filter
 :INPUT DROP [0:0]
@@ -50,7 +53,7 @@ def firewall_rules(address, port, host=None):
 -A CAGED_GATE -m set --match-set {LEASE} src -j RETURN
 -A CAGED_GATE -j DROP
 -A INPUT -i eth0 -s {address}/32 -p tcp --sport {port} -m connmark --mark {CORE_MARK} -m conntrack --ctdir REPLY -j ACCEPT
-{host_in}-A INPUT -p tcp --dport {BROWSER_HTTPS_PORT} -j ACCEPT
+{host_in}-A INPUT -p tcp --dport {ui_port} -j ACCEPT
 -A INPUT -i lo -p udp -m multiport --ports 53 -j CAGED_GATE
 -A INPUT -i lo -p tcp -m multiport --ports 53 -j CAGED_GATE
 -A INPUT -i lo -j ACCEPT
@@ -60,7 +63,7 @@ def firewall_rules(address, port, host=None):
 -A OUTPUT -m mark --mark {PROBE_MARK} -j CONNMARK --save-mark
 -A OUTPUT -o eth0 -d {address}/32 -p tcp --dport {port} -m mark --mark {CORE_MARK} -j CONNMARK --save-mark
 -A OUTPUT -o eth0 -d {address}/32 -p tcp --dport {port} -m mark --mark {CORE_MARK} -j ACCEPT
-{host_out}-A OUTPUT -p tcp --sport {BROWSER_HTTPS_PORT} -m conntrack --ctstate ESTABLISHED -j ACCEPT
+{host_out}-A OUTPUT -p tcp --sport {ui_port} -m conntrack --ctstate ESTABLISHED -j ACCEPT
 -A OUTPUT -o lo -p udp -m multiport --ports 53 -j CAGED_GATE
 -A OUTPUT -o lo -p tcp -m multiport --ports 53 -j CAGED_GATE
 -A OUTPUT -o lo -j ACCEPT
