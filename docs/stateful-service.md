@@ -174,14 +174,15 @@ state/<实例>/
 - **选择**：`state.backend` 默认 `auto`，macOS 上是 `image`，Linux/WSL 上仍是 `dir`，行为不变。Linux/WSL 也可以显式写 `state.backend: image`。已有环境始终沿用标记里记录的后端；显式配置与之不符时拒绝启动，不会悄悄换后端。
 - **挂载方式**（§4.7 的 L3）：一个短暂的特权辅助容器（`containers/storage`，只有 e2fsprogs，无网络）在 Docker 虚拟机里执行 `losetup`，把镜像接到 loop 设备上；随后定义 Docker local 卷 `<实例>-state`（`type=ext4,device=/dev/loopN`）。claude 和 browser 容器用 `volume-subpath` 挂载各个目录，例如 `system/usr → /usr`、`home → /home/claude`、`browser → /config`。这两个容器本身仍然没有特权。Claude 凭证仍是 `config/claude/<实例>/` 的 bind mount（普通文件放在 FUSE 上没有问题）。
 - **生命周期**：Docker 在第一个使用卷的容器启动时挂载文件系统，在最后一个容器退出时卸载。`./cage down` 再删除卷的定义（不删数据），并断开 loop 设备，所以停止后的 `disk.img` 是干净、可以直接复制的文件。loop 设备号在 Docker 虚拟机重启后会变化，因此每次 `up` 都重新定义卷；只有没被任何容器使用的卷才会被替换。
-- **身份校验**：标记记录了文件系统 UUID；接入前用 `tune2fs` 比对，被替换的镜像会被拒绝。同一个文件已经接在多个 loop 设备上时也拒绝，避免同一文件系统被挂载两次。
+- **挂载选项**：loop 设备开启 direct I/O，虚拟机不再把同一份数据额外缓存一遍；卷以 `discard` 挂载，容器里删除文件后，`disk.img` 在宿主上占用的空间随即缩小（§4.7）。
+- **身份校验**：标记记录了文件系统 UUID；接入前用 `tune2fs` 比对，被替换的镜像会被拒绝。同一个文件已经接在多个 loop 设备上时也拒绝，避免同一文件系统被挂载两次。不开启 ext4 的多重挂载保护（MMP）：它防的是两台机器同时挂载同一个文件（例如放在网盘里），但实测在 OrbStack 上检查间隔会被拉长到 42 秒，每次异常停机后的第一次挂载要多等一分多钟。
 - **首次初始化**：在 `disk.img.tmp` 上建文件系统、接入并 seed，完成后断开、改名为 `disk.img`，**最后**写宿主标记。中断只会留下 `disk.img.tmp`，下次启动清理后重来；没有标记的 `disk.img` 永远不会被删除或覆盖。
 - **迁移**：停止实例后，复制整个 `state/<实例>/` 和 `config/claude/<实例>/` 即可，放到另一台 Mac 上，或者放到 Linux 上作为 image 后端使用。在 Mac 上用 `cp -c` 可以利用 APFS 克隆，不占额外空间。dir 与 image 两种后端之间的转换（`export`/`import`）放在阶段 2。
 - **代价**：多一次特权容器调用（只做 losetup）；数据的持久性取决于 OrbStack 把 loop 设备的写入和 `fsync` 落到 Mac 文件上的方式。OrbStack 自己的虚拟机磁盘也是 Mac 上的镜像文件，风险属于同一类。
 
 ### 4.7 macOS 实测（维护者，2026-11）
 
-环境：macOS 26.5.2、OrbStack 2.2.5、Docker 29.8.2、Apple Silicon。脚本在 `tests/diag/`。
+环境：macOS 26.5.2、OrbStack 2.2.5、Docker 29.8.2、Apple Silicon。诊断脚本是一次性的，没有保留在仓库中。
 
 | 项目 | 结果 |
 | --- | --- |
@@ -194,6 +195,19 @@ state/<实例>/
 | L4：local 卷直接 `o=loop` 指向文件 | 失败（内核 mount 不支持 loop 选项） |
 
 性能（1 GB 顺序写 + fsync / 500 次 4 KB 同步写 / 复制 101 MB 的 `/usr`）：Mac 目录 1.18 s / 0.41 s / 0.65 s，命名卷 1.18 s / 0.84 s / 0.41 s，ext4 镜像 1.39 s / 1.01 s / 0.18 s。
+
+第二轮，针对镜像方案的风险：
+
+| 项目 | 结果 | 结论 |
+| --- | --- | --- |
+| 用真实 Claude 镜像 seed（约 1 GB、1.8 万个文件） | 4 s；`sudo` 的 setuid 保留 | 首次启动不会明显变慢 |
+| loop direct I/O | 1 GB 写入 + fsync 从 1.51 s 降到 0.44 s；同步小块写 0.92 s / 1.14 s | 采用 |
+| 删除后回收空间 | 以 `discard` 挂载：写入 1 GB 后删除，镜像从 1030 MB 回到 6 MB；不开时仍占 1031 MB，`fstrim` 后为 7 MB | 采用 `discard` |
+| `docker kill` 中断写入 | 已 fsync 的 966 个文件全部存在，`fsck` 干净 | ext4 日志足够 |
+| 多重挂载保护（MMP） | 能拒绝第二次挂载，但检查间隔被拉到 42 s | 不采用 |
+| 在线扩容 | `resize2fs` 在辅助容器中看不到挂载点，按离线处理，打开设备时报 busy | 以后做停机扩容：`truncate` → `e2fsck` → `resize2fs` |
+
+没有测试停止 OrbStack 虚拟机的情况，因为那会中断宿主上的其他容器。
 
 ## 5. 命令语义
 
@@ -288,7 +302,7 @@ state/<实例>/
 - `reset` 保留 HOME、浏览器资料和 Claude 凭证，并可回滚；`snapshot`/`restore` 往返一致；
 - 浏览器登录后 `docker kill` 网关和浏览器，再 `up`，Cookie 仍在，Chromium 不报配置被占用；
 - 网络边界回归：现有 verify/audit 全部通过，探针运行时不可写。
-- image 后端（单元测试模拟 Docker 和 loop 设备）：首次 seed 只在 `disk.img.tmp` 上进行、标记最后写入；再次启动不重新 seed，并在新的 loop 设备上重建卷；被替换或缺失的镜像、被其他容器占用的卷都拒绝；没有标记的 `disk.img` 不会被覆盖；macOS 上的端到端验证用 `tests/diag/` 的脚本。
+- image 后端（单元测试模拟 Docker 和 loop 设备）：首次 seed 只在 `disk.img.tmp` 上进行、标记最后写入；再次启动不重新 seed，并在新的 loop 设备上重建卷；被替换或缺失的镜像、被其他容器占用的卷都拒绝；没有标记的 `disk.img` 不会被覆盖。集成测试 `test_image_backend_survives_kill_detach_and_recreation` 在真实 Docker 上走一遍 seed → 写入 → kill → 断开 → 重新接入，Linux 和 macOS 上都可以用 `./cage check test` 运行。
 
 ## 10. 决定记录
 

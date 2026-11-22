@@ -324,8 +324,9 @@ class ImageState(InstanceState):
         """Detach the image once no container uses its volume.
 
         Called after the instance's containers are gone; a volume still in use
-        (another launcher of this instance) is left alone."""
-        if not self.disk.is_file():
+        (another launcher of this instance) is left alone. Without a volume
+        nothing was attached by this launcher, so no privileged helper runs."""
+        if not self.disk.is_file() or not self._volume_exists():
             return
         with self.locked():
             if not self._drop_volume():
@@ -359,9 +360,12 @@ class ImageState(InstanceState):
         result = engine.docker('ps', '-aq', '--filter', 'volume=' + self.volume, check=False)
         return result.stdout.split()
 
+    def _volume_exists(self):
+        return engine.docker('volume', 'inspect', self.volume, check=False).returncode == 0
+
     def _drop_volume(self):
         """Remove the volume definition (never its data); False while it is in use."""
-        if engine.docker('volume', 'inspect', self.volume, check=False).returncode:
+        if not self._volume_exists():
             return True
         if self._volume_users():
             return False
@@ -385,10 +389,15 @@ if [ $# -gt 1 ]; then
     echo "$DISK is attached to several loop devices ($*); run ./cage down first" >&2
     exit 4
 fi
-[ $# -eq 1 ] || set -- "$(losetup -f --show "$DISK")"
+# Direct I/O keeps a second copy of every block out of the VM's page cache
+# (and measured faster on OrbStack); losetup falls back if it is unsupported.
+[ $# -eq 1 ] || set -- "$(losetup -f --show --direct-io=on "$DISK")"
 echo "$1"''', disk=disk, UUID=filesystem)
         device = result.stdout.strip().splitlines()[-1]
+        # discard hands freed blocks back, so deleting files shrinks disk.img
+        # on the host (measured on OrbStack; docs/stateful-service.md §4.7).
         engine.docker('volume', 'create', '--driver', 'local', '--opt', 'type=ext4', '--opt', 'device=' + device,
+                      '--opt', 'o=discard',
                       '--label', f'{LABEL}={ROOT}', '--label', 'io.caged-claude.state=' + state_id, self.volume)
 
     def _remove_leftovers(self, image):

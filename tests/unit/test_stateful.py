@@ -250,6 +250,10 @@ class ImageBackend(unittest.TestCase):
         self.assertNotIn('--privileged', create, 'creating the file needs no privilege')
         self.assertTrue(all('--privileged' in command for command in helpers if 'losetup' in command[-1]))
         self.assertTrue(all('--network' in command and 'none' in command for command in helpers))
+        attach = next(command for command in helpers if 'losetup -f' in command[-1])
+        self.assertIn('--direct-io=on', attach[-1])
+        create = next(command for command in self.docker.calls if command[1:3] == ['volume', 'create'])
+        self.assertIn('o=discard', create, 'deleted files must shrink disk.img on the host')
 
     def test_later_starts_reattach_without_reseeding_and_recreate_the_volume(self):
         self.run_docker('ensure', 'fixture-image')
@@ -270,6 +274,10 @@ class ImageBackend(unittest.TestCase):
         self.run_docker('release')
         self.assertEqual((self.docker.volumes, self.docker.loops), ({}, {}))
         self.assertTrue(self.state.disk.is_file(), 'release never touches the data')
+        self.docker.calls.clear()
+        self.run_docker('release')
+        self.assertFalse(any(images.IMAGES['storage'] in command for command in self.docker.calls),
+                         'no volume, no privileged helper')
 
     def test_a_volume_used_by_other_containers_is_not_replaced(self):
         self.run_docker('ensure', 'fixture-image')
