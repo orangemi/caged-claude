@@ -8,7 +8,9 @@ from .paths import ROOT
 
 IMAGES = {'network': 'caged-claude-network:local',
           'browser': 'caged-claude-browser:local',
-          'claude': 'caged-claude-claude:local'}
+          'claude': 'caged-claude-claude:local',
+          # Helper for the image state backend; see caged/host/stateful.py.
+          'storage': 'caged-claude-storage:local'}
 
 
 def input_files(role):

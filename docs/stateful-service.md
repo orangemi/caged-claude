@@ -1,6 +1,6 @@
 # 有状态 Linux 环境设计
 
-> 状态：阶段 1（§9）已实现，阶段 2 的维护命令（reset、archive、snapshot、restore、destroy、upgrade）尚未实现。本文替代此前“保留容器可写层 + 具名卷”的方案。
+> 状态：阶段 1（§9）已实现，包括 macOS 使用的 image 后端（§4.6）；阶段 2 的维护命令（reset、archive、snapshot、restore、destroy、upgrade）尚未实现。本文替代此前“保留容器可写层 + 具名卷”的方案。
 
 ## 1. 目标
 
@@ -158,12 +158,49 @@ config/claude/<实例>/  → /home/claude/.claude   （叠加在 home 的挂载�
 | 浏览器登录、Cookie、历史 | 浏览器 `/config` | 保留 |
 | `/tmp` | tmpfs | **不保留**，和真实 Linux 重启一样（Debian 13 的 `/tmp` 默认就是 tmpfs）。需要在文档和 `./cage claude` 的提示中写明 |
 
+### 4.6 image 后端：整个状态放在一个 ext4 镜像文件里（macOS）
+
+macOS 上，宿主目录要经过 OrbStack 的文件共享（FUSE）才能进入 Docker 的 Linux 虚拟机。实测（§4.7）这层共享接受 `chown`，但不保存属主，所以 §4.1 的目录布局在 Mac 上无法通过能力检测。image 后端把**同一套布局**放进一个 ext4 镜像文件，文件本身仍在宿主上：
+
+```text
+state/<实例>/
+├── .caged-state      # 宿主上的标记：多记录 backend: image 和文件系统 UUID
+├── lifecycle.lock
+├── disk.img          # 稀疏的 ext4 镜像，上限 state.size（默认 64g），按实际写入占用空间
+│                     #   里面是 system/、home/、browser/，与 §4.1 相同
+└── bridge/           # 宿主桥，仍是宿主目录
+```
+
+- **选择**：`state.backend` 默认 `auto`，macOS 上是 `image`，Linux/WSL 上仍是 `dir`，行为不变。Linux/WSL 也可以显式写 `state.backend: image`。已有环境始终沿用标记里记录的后端；显式配置与之不符时拒绝启动，不会悄悄换后端。
+- **挂载方式**（§4.7 的 L3）：一个短暂的特权辅助容器（`containers/storage`，只有 e2fsprogs，无网络）在 Docker 虚拟机里执行 `losetup`，把镜像接到 loop 设备上；随后定义 Docker local 卷 `<实例>-state`（`type=ext4,device=/dev/loopN`）。claude 和 browser 容器用 `volume-subpath` 挂载各个目录，例如 `system/usr → /usr`、`home → /home/claude`、`browser → /config`。这两个容器本身仍然没有特权。Claude 凭证仍是 `config/claude/<实例>/` 的 bind mount（普通文件放在 FUSE 上没有问题）。
+- **生命周期**：Docker 在第一个使用卷的容器启动时挂载文件系统，在最后一个容器退出时卸载。`./cage down` 再删除卷的定义（不删数据），并断开 loop 设备，所以停止后的 `disk.img` 是干净、可以直接复制的文件。loop 设备号在 Docker 虚拟机重启后会变化，因此每次 `up` 都重新定义卷；只有没被任何容器使用的卷才会被替换。
+- **身份校验**：标记记录了文件系统 UUID；接入前用 `tune2fs` 比对，被替换的镜像会被拒绝。同一个文件已经接在多个 loop 设备上时也拒绝，避免同一文件系统被挂载两次。
+- **首次初始化**：在 `disk.img.tmp` 上建文件系统、接入并 seed，完成后断开、改名为 `disk.img`，**最后**写宿主标记。中断只会留下 `disk.img.tmp`，下次启动清理后重来；没有标记的 `disk.img` 永远不会被删除或覆盖。
+- **迁移**：停止实例后，复制整个 `state/<实例>/` 和 `config/claude/<实例>/` 即可，放到另一台 Mac 上，或者放到 Linux 上作为 image 后端使用。在 Mac 上用 `cp -c` 可以利用 APFS 克隆，不占额外空间。dir 与 image 两种后端之间的转换（`export`/`import`）放在阶段 2。
+- **代价**：多一次特权容器调用（只做 losetup）；数据的持久性取决于 OrbStack 把 loop 设备的写入和 `fsync` 落到 Mac 文件上的方式。OrbStack 自己的虚拟机磁盘也是 Mac 上的镜像文件，风险属于同一类。
+
+### 4.7 macOS 实测（维护者，2026-11）
+
+环境：macOS 26.5.2、OrbStack 2.2.5、Docker 29.8.2、Apple Silicon。脚本在 `tests/diag/`。
+
+| 项目 | 结果 |
+| --- | --- |
+| Mac 目录 bind mount（FUSE） | 属主不保存（`chown` 后仍是 `0:0`）；setuid、硬链接、符号链接正常 |
+| 命名卷（虚拟机内 btrfs） | 能力检测通过，但数据不在宿主上 |
+| Mac 上的稀疏 ext4 镜像 | 8 GB 镜像实际占用 6 MB；能力检测通过；卸载、重新挂载后数据仍在；`fsck` 干净 |
+| L1：nsenter 到 Docker 主机挂载 | 失败（busybox mount 报 `Invalid argument`） |
+| L2：特权容器挂载，经 rshared 传播 | 可用，但要自己管理挂载点 |
+| **L3：losetup + local 卷 `device=/dev/loopN`** | **可用；`volume-subpath`、多个容器同时挂载都正常（采用）** |
+| L4：local 卷直接 `o=loop` 指向文件 | 失败（内核 mount 不支持 loop 选项） |
+
+性能（1 GB 顺序写 + fsync / 500 次 4 KB 同步写 / 复制 101 MB 的 `/usr`）：Mac 目录 1.18 s / 0.41 s / 0.65 s，命名卷 1.18 s / 0.84 s / 0.41 s，ext4 镜像 1.39 s / 1.01 s / 0.18 s。
+
 ## 5. 命令语义
 
 | 命令 | 行为 |
 | --- | --- |
 | `./cage up` | 未初始化则 seed；然后挂载状态启动，网络检查流程不变 |
-| `./cage down` | 停止并删除容器，状态目录保留，并执行 `sync` |
+| `./cage down` | 停止并删除容器，状态目录保留，并执行 `sync`；image 后端还会删除卷定义、断开 loop 设备 |
 | `./cage reset [--home] [--browser]` | 停止后把 `system/` **移动**到 `archive/<时间>/`（同盘上是改名，瞬间完成），再从当前镜像重新 seed 系统层。HOME 和浏览器资料默认保留，`--home`、`--browser` 时分别一并归档。Claude 凭证在 `config/` 中，任何 reset 都不会触及 |
 | `./cage archive list\|restore <时间>\|prune <时间>` | 查看、回滚、删除归档；删除需要输入实例名确认 |
 | `./cage snapshot` | `docker pause` 应用容器，打包 `system/` 和 `home/` 为 `snapshots/<时间>.tar.zst`，再 `unpause`。可用宿主 cron 或 systemd timer 定时调用 |
@@ -203,7 +240,7 @@ config/claude/<实例>/  → /home/claude/.claude   （叠加在 home 的挂载�
 
 ## 8. 风险与限制
 
-1. **只支持 Linux/WSL**（已确认）：Linux（包括 WSL 的 ext4）上 bind mount 能完整保留属主、setuid、硬链接。macOS 不在支持范围内，也不做替代存储。§4.2 的能力检测仍然保留，检测不通过就明确报错。
+1. **dir 后端只支持 Linux/WSL**：Linux（包括 WSL 的 ext4）上 bind mount 能完整保留属主、setuid、硬链接。macOS 默认使用 image 后端（§4.6）。dir 后端的能力检测仍然保留，检测不通过就报错，并说明哪一项没有保存、应改用哪个后端。
 2. **宿主上出现 root 属主的文件**：`system/` 下的文件属主是 root，宿主的普通用户不能直接删除或修改，所以由 `./cage destroy` 和 `archive prune` 通过容器处理。备份时需要 `sudo tar --numeric-owner`，或使用 `./cage snapshot`。
 3. **空间**：每个实例完整复制一份系统，且不是增量存储。宿主文件系统支持 reflink（btrfs、XFS、APFS）时，snapshot 和 archive 可以改用 `cp --reflink` 优化。
 4. **持久化的系统也会持久化用户的破坏**：例如修改 `/etc/profile`、替换 `python3`。网络边界由网关的命名空间和防火墙保证，与容器内系统无关；探针代码只读挂载，失败时断网。因此安全边界不变，最坏情况只是环境不可用，可以 `reset`。
@@ -251,6 +288,7 @@ config/claude/<实例>/  → /home/claude/.claude   （叠加在 home 的挂载�
 - `reset` 保留 HOME、浏览器资料和 Claude 凭证，并可回滚；`snapshot`/`restore` 往返一致；
 - 浏览器登录后 `docker kill` 网关和浏览器，再 `up`，Cookie 仍在，Chromium 不报配置被占用；
 - 网络边界回归：现有 verify/audit 全部通过，探针运行时不可写。
+- image 后端（单元测试模拟 Docker 和 loop 设备）：首次 seed 只在 `disk.img.tmp` 上进行、标记最后写入；再次启动不重新 seed，并在新的 loop 设备上重建卷；被替换或缺失的镜像、被其他容器占用的卷都拒绝；没有标记的 `disk.img` 不会被覆盖；macOS 上的端到端验证用 `tests/diag/` 的脚本。
 
 ## 10. 决定记录
 
@@ -259,6 +297,7 @@ config/claude/<实例>/  → /home/claude/.claude   （叠加在 home 的挂载�
 | 状态目录位置 | 项目内 `state/<实例>/`（已确认） |
 | Claude 凭证 | 单独存放在 `config/claude/<实例>/`，不随 `state/` 打包或重置（已确认） |
 | 浏览器登录与 Cookie | 持久化到 `state/<实例>/browser/`，与 Claude 系统层分开（已确认） |
-| macOS | 不支持系统级持久化，能力检测不通过就报错（已确认） |
+| macOS | 使用 image 后端：`state/<实例>/disk.img`，经 loop 设备和 Docker local 卷挂载（已确认，§4.6）；Linux/WSL 默认仍用目录，可选 image |
+| 浏览器资料（image 后端） | 与系统、HOME 放在同一个镜像里，一个实例的全部状态就是 `disk.img` 加凭证目录（已确认） |
 | 基础镜像 | Debian 13（trixie）slim，固定 digest（已确认，比较见 §7） |
 | sudo | 默认免密码 sudo，`claude.sudo: false` 可关闭（已确认，代价见 §8 第 6 条） |

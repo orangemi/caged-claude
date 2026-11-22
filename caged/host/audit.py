@@ -76,17 +76,22 @@ def run_audit(session):
                     and not state['HostConfig'].get('PidMode'), 'Unexpected host privilege or PID sharing')
             actual = {mount['Destination']: mount['Source'] for mount in state.get('Mounts', []) if mount['Type'] == 'bind'}
             require(actual == session.expected_mounts(role), 'Unexpected host filesystem mount in ' + role)
+            volumes = {mount['Destination']: mount.get('Name') for mount in state.get('Mounts', [])
+                       if mount['Type'] == 'volume'}
+            require(volumes == session.expected_volumes(role), 'Unexpected volume mount in ' + role)
+            require(all(mount['Type'] in ('bind', 'volume') for mount in state.get('Mounts', [])),
+                    'Unexpected mount type in ' + role)
             # Only the probe runtime and the host bridge socket directory are
             # read-only; every state mount must be writable.
             readonly = set(session.readonly_mounts()) if role == 'claude' else set()
             require(all(mount['RW'] != (mount['Destination'] in readonly)
-                        for mount in state.get('Mounts', []) if mount['Type'] == 'bind'),
+                        for mount in state.get('Mounts', [])),
                     'A state mount is read-only or the probe runtime is writable')
             require(state['HostConfig']['AutoRemove'], 'Container does not remove its temporary data on exit')
         require(system['private_paths_absent'], 'Browser can read gateway secrets or a Docker socket')
         passed('filesystem_boundary', {'workspace': [str(path) for path in session.args.workspace],
                                       'claude_state': str(session.args.claude_config_dir),
-                                      'environment_state': str(session.state.root),
+                                      'environment_state': session.state.describe(),
                                       'scope': '仅明示的 workspace、Claude 凭证与实例状态目录，以及只读的探针代码；无额外宿主挂载、Docker socket 或网关凭证'})
         require(system['management_http'] == 401 and system['no_network_admin_or_raw'],
                 'Browser can administer the gateway without authentication or has network capabilities')

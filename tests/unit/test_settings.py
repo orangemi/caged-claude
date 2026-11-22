@@ -435,6 +435,29 @@ class Settings(unittest.TestCase):
         with self.assertRaises(ConfigError):
             self.parse('--state-dir','/tmp/a:b')
 
+    def test_state_backend_defaults_to_image_only_on_macos(self):
+        states=str(self.folder/'states')
+        linux=self.parse('--state-dir',states,env={'CAGED_HOST_OS':'Linux'})
+        mac=self.parse('--state-dir',states,'--host-bridge','false',env={'CAGED_HOST_OS':'Darwin'})
+        self.assertEqual((linux.state_backend,linux.state_backend_explicit),('dir',False))
+        self.assertEqual((mac.state_backend,mac.state_backend_explicit,mac.state_size),('image',False,'64G'))
+        chosen=self.parse('--state-dir',states,'--state-backend','image','--state-size','1t',env={'CAGED_HOST_OS':'Linux'})
+        self.assertEqual((chosen.state_backend,chosen.state_backend_explicit,chosen.state_size),('image',True,'1T'))
+        for flags in (('--state-backend','zfs'),('--state-size','4g'),('--state-size','64'),('--state-size','0g')):
+            with self.assertRaises(ConfigError):
+                self.parse('--state-dir',states,*flags)
+        session=Session(mac)
+        session.network_container_id,session.network_session_id='fixture-id','fixture-session'
+        claude,browser=session.claude_command(),session.browser_command()
+        self.assertIn('type=volume,src=caged-claude-state,dst=/usr,volume-subpath=system/usr',claude)
+        self.assertIn(f'type=bind,src={mac.claude_config_dir},dst=/home/claude/.claude',claude)
+        self.assertIn('type=volume,src=caged-claude-state,dst=/config,volume-subpath=browser',browser)
+        self.assertEqual(session.expected_volumes('browser'),{'/config':'caged-claude-state'})
+        self.assertEqual(set(session.expected_volumes('claude')),
+                         {'/etc','/usr','/var','/opt','/srv','/root','/home/claude'})
+        self.assertNotIn('/usr',session.expected_mounts('claude'))
+        self.assertIn('/home/claude/.claude',session.expected_mounts('claude'))
+
     def test_claude_entry_uses_actual_container_identity_and_forwards_cli_flags(self):
         from caged.host.claude import command
         labels = {LABEL: str(ROOT)}

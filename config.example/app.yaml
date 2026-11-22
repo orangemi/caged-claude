@@ -51,9 +51,11 @@ browser:
 #   address: 0.250.250.254  # 仅 tcp：host.docker.internal 的 IPv4，默认启动时自动解析
 
 # 可选。Claude 的 Linux 环境（/etc、/usr、/var、/opt、/srv、/root、/home/claude）和浏览器资料
-# 实时保存在 <state.dir>/<实例>/，默认本项目 state/。必须是 Linux 文件系统（如 ext4）。
+# 实时保存在 <state.dir>/<实例>/，默认本项目 state/。
 # state:
 #   dir: ../state
+#   backend: auto   # auto：macOS 用 image，Linux/WSL 用 dir；dir 需要 Linux 文件系统（如 ext4）
+#   size: 64g       # 仅 image：新建镜像 disk.img 的上限，稀疏文件，按实际用量占用空间
 
 # 整个 monitor 块可省略。单位为秒，优先级仍是 CLI > ENV > YAML > 默认。
 # monitor:

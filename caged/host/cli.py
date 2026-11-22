@@ -42,7 +42,9 @@ def show_status(instance, args=None):
             observed = json.loads(result.stdout)
             print('network permit: ' + observed['state'] + '; remaining=' + str(observed['lease_remaining']) + 's; ' + observed['reason'])
     if args is not None:
-        print('host bridge: ' + hostbridge.status(args, stateful.InstanceState(args.state_dir, args.instance)))
+        state = stateful.open_state(args)
+        print('environment: ' + state.describe())
+        print('host bridge: ' + hostbridge.status(args, state))
 
 
 def main(args):
@@ -73,10 +75,12 @@ def main(args):
     if args.action == 'stop':
         for name in instance.shutdown_order:
             engine.stop_managed(name)
-        # The environment lives in state/<instance>/ on the host; flush it now
-        # rather than whenever the kernel gets to it.
+        state = stateful.open_state(args)
+        # An image is unmounted with the last container; detach it so the file
+        # is clean to copy. Directories are flushed now rather than later.
+        state.release()
         os.sync()
-        hostbridge.write_plan(args, stateful.InstanceState(args.state_dir, args.instance), 'stop')
+        hostbridge.write_plan(args, state, 'stop')
         return
     if args.action == 'status':
         warn_legacy()

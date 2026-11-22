@@ -86,11 +86,13 @@ ssh -J host aws-box               # 经宿主连接只有宿主能访问的机�
 | --- | --- | --- |
 | 应用配置、节点文件 | `config/app.yaml`、`config/mihomo.yaml` | Git 忽略；节点文件权限 `600` |
 | Claude 登录状态 | `config/claude/<实例>/` | 单独存放，重建环境不受影响 |
-| Linux 系统和 HOME | `state/<实例>/system/`、`state/<实例>/home/` | 实时写入；`/tmp` 不保留 |
-| 浏览器登录和 Cookie | `state/<实例>/browser/` | 实时写入 |
+| Linux 系统和 HOME | `state/<实例>/system/`、`state/<实例>/home/`；macOS 上在 `state/<实例>/disk.img` 里 | 实时写入；`/tmp` 不保留 |
+| 浏览器登录和 Cookie | `state/<实例>/browser/`；macOS 上在 `state/<实例>/disk.img` 里 | 实时写入 |
 | 项目文件 | 宿主上的原目录 | workspace 按原路径挂载，两边看到的是同一份文件 |
 
 `state/` 下有 root 属主的文件。删除一个实例的方法是：`sudo rm -rf state/<实例>`，再删除 `config/instances/<实例>.json`。
+
+macOS 上整个环境是一个 ext4 镜像文件 `state/<实例>/disk.img`（稀疏文件，按实际用量占用空间，详见[设计文档 §4.6](docs/stateful-service.md)）。`./cage down` 之后，复制 `state/<实例>/` 和 `config/claude/<实例>/` 就能把环境搬到另一台 Mac 或 Linux 上。
 
 ## 出问题时
 

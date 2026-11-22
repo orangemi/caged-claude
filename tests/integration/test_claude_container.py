@@ -43,7 +43,7 @@ class ClaudeContainer(unittest.TestCase):
                 user='0:0' if root else f'{args.puid}:{args.pgid}'
                 return engine.docker('exec','--user',user,names.claude,*command,check=check)
             try:
-                session.prepare_claude_state()
+                session.prepare_state()
                 self.assertTrue((session.state.root/'.caged-state').is_file())
                 start()
                 self.assertIn('Claude Code',execute('claude','--version').stdout)
@@ -69,7 +69,7 @@ class ClaudeContainer(unittest.TestCase):
                 for _ in range(100):
                     if engine.inspect(names.claude) is None:break
                     time.sleep(0.1)
-                session.prepare_claude_state()  # reuses the marked state, no reseed
+                session.prepare_state()  # reuses the marked state, no reseed
                 start()
                 self.assertEqual(execute('cat','/home/claude/notes.txt').stdout,'home')
                 self.assertEqual(execute('cat','/etc/caged-fixture').stdout,'etc\n')
