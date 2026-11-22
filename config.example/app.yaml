@@ -39,6 +39,16 @@ browser:
 #   config_dir: claude/my-instance  # 只能是本项目 config/ 下的子目录。
 #   sudo: true                      # 默认 true：claude-user 可免密码 sudo；false 时只能从宿主 ./cage shell --root。
 
+# 可选。宿主桥：笼子里 `ssh host` 回到本机，默认开启。开启时笼子里的任何进程都能以你的身份在宿主上执行命令。
+# 宿主需要 python3 和 sshd 程序（不需要开启 SSH 服务）；缺少时只警告，不影响启动。
+# host_bridge:
+#   enabled: true
+#   user: yourname          # 默认运行 ./cage 的用户
+#   sshd: /usr/sbin/sshd    # 默认自动查找
+#   transport: auto         # auto：Linux/WSL 用 Unix socket，macOS 用回环 TCP；也可写 unix 或 tcp
+#   port: 41234             # 仅 tcp：Mac 上监听 127.0.0.1 的端口，默认按实例名推算（41000–41999）
+#   address: 0.250.250.254  # 仅 tcp：host.docker.internal 的 IPv4，默认启动时自动解析
+
 # 可选。Claude 的 Linux 环境（/etc、/usr、/var、/opt、/srv、/root、/home/claude）和浏览器资料
 # 实时保存在 <state.dir>/<实例>/，默认本项目 state/。必须是 Linux 文件系统（如 ext4）。
 # state:

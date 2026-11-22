@@ -307,7 +307,9 @@ class Settings(unittest.TestCase):
         self.assertIn('CAGED_SUDO=1',claude)
         self.assertEqual(set(session.expected_mounts('claude')),
                          {str(second),'/etc','/usr','/var','/opt','/srv','/root','/home/claude','/home/claude/.claude',
-                          '/caged-runtime/caged','/caged-runtime/entrypoint.sh'})
+                          '/caged-runtime/caged','/caged-runtime/entrypoint.sh','/run/caged-host'})
+        self.assertIn(f'type=bind,src={session.state.root / "bridge"},dst=/run/caged-host,readonly',claude)
+        self.assertIn('CAGED_HOST_USER='+args.host_bridge_user,claude)
         self.assertEqual(set(session.expected_mounts('browser')),{str(second),'/config'})
         for value in session.common_environment():
             self.assertIn(value,browser);self.assertIn(value,claude)
@@ -324,6 +326,48 @@ class Settings(unittest.TestCase):
         self.assertEqual(args.claude_config_dir,ROOT/'config'/'claude'/'caged-claude')
         self.assertEqual(self.parse('--instance','other').claude_config_dir,ROOT/'config'/'claude'/'other')
         self.assertEqual(args.state_dir,ROOT/'state')
+
+    def test_host_bridge_is_on_by_default_and_can_be_turned_off(self):
+        args=self.parse(env={'CAGED_HOST_USER':'alice'})
+        self.assertIs(args.host_bridge,True)
+        self.assertEqual(args.host_bridge_user,'alice')
+        self.assertIsNone(args.host_bridge_sshd)
+        self.data['host_bridge']={'enabled':False}
+        self.write()
+        args=self.parse()
+        self.assertIs(args.host_bridge,False)
+        session=Session(args)
+        session.network_container_id,session.network_session_id='fixture-id','fixture-session'
+        command=session.claude_command()
+        self.assertNotIn('/run/caged-host',' '.join(command))
+        self.assertFalse(any(item.startswith('CAGED_HOST_USER=') for item in command))
+        self.assertNotIn('/run/caged-host',session.expected_mounts('claude'))
+        self.assertIs(self.parse('--host-bridge','yes').host_bridge,True)
+        self.assertEqual(self.parse(env={'CAGED_HOST_OS':'Linux'}).host_bridge_transport,'unix')
+        self.assertEqual(self.parse(env={'CAGED_HOST_OS':'Darwin'}).host_bridge_transport,'tcp')
+        self.assertEqual(self.parse('--host-bridge-transport','unix',env={'CAGED_HOST_OS':'Darwin'}).host_bridge_transport,'unix')
+        port=self.parse().host_bridge_port
+        self.assertTrue(41000<=port<42000)
+        self.assertEqual(self.parse().host_bridge_port,port,'stable per instance')
+        self.assertEqual(self.parse('--host-bridge-port','2222').host_bridge_port,2222)
+        self.assertEqual(self.parse('--host-bridge-address','192.168.65.254').host_bridge_address,'192.168.65.254')
+        self.assertEqual(self.parse('--host-bridge-user','bob').host_bridge_user,'bob')
+        for flags in (('--host-bridge','maybe'),('--host-bridge-user','bad user'),('--host-bridge-sshd','sshd'),
+                      ('--host-bridge-transport','ssh'),('--host-bridge-port','80'),('--host-bridge-address','host')):
+            with self.assertRaises(ConfigError,msg=flags):
+                self.parse(*flags)
+
+    def test_macos_session_opens_the_host_endpoint_in_the_gateway_policy(self):
+        from unittest.mock import patch as mock_patch
+        from caged.host import hostbridge
+        args=self.parse(env={'CAGED_HOST_OS':'Darwin','CAGED_HOST_USER':'alice'})
+        with mock_patch.object(hostbridge.socket,'gethostbyname',return_value='0.250.250.254'):
+            session=Session(args)
+        session.network_container_id,session.network_session_id='fixture-id','fixture-session'
+        self.assertEqual(session.policy['host_bridge_tcp'],['0.250.250.254',args.host_bridge_port])
+        self.assertIn(f'CAGED_HOST_BRIDGE=tcp:0.250.250.254:{args.host_bridge_port}',session.claude_command())
+        linux=Session(self.parse(env={'CAGED_HOST_OS':'Linux'}))
+        self.assertIsNone(linux.policy['host_bridge_tcp'])
 
     def test_state_directory_and_sudo_follow_the_usual_precedence(self):
         args=self.parse()

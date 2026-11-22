@@ -6,7 +6,7 @@ import subprocess
 import sys
 import time
 import uuid
-from . import docker as engine, images, proxy, stateful
+from . import docker as engine, hostbridge, images, proxy, stateful
 from .config import runtime_policy
 from .errors import CageError
 from .instance import Instance
@@ -24,6 +24,7 @@ class Session:
         self.args = args
         self.instance = Instance(args.instance)
         self.detached = detached
+        args.host_bridge_tcp = hostbridge.tcp_endpoint(args)
         self.policy = runtime_policy(args)
         self.gateway_process = None
         self.check_process = None
@@ -186,19 +187,26 @@ class Session:
         return {stateful.RUNTIME + '/caged': str(ROOT / 'caged'),
                 stateful.RUNTIME + '/entrypoint.sh': str(ROOT / 'containers' / 'claude' / 'entrypoint.sh')}
 
+    def readonly_mounts(self):
+        """Probe runtime and, when enabled, the host bridge socket directory."""
+        mounts = self.runtime_mounts()
+        if self.args.host_bridge:
+            mounts[hostbridge.MOUNT] = str(hostbridge.bridge_dir(self.state))
+        return mounts
+
     def expected_mounts(self, role):
         mounts = {str(path): str(path) for path in self.args.workspace} if role in ('browser', 'claude') else {}
         if role == 'browser':
             mounts['/config'] = str(self.state.browser)
         if role == 'claude':
             mounts.update(self.state.claude_mounts(self.args.claude_config_dir))
-            mounts.update(self.runtime_mounts())
+            mounts.update(self.readonly_mounts())
         return mounts
 
     def claude_state_arguments(self):
         mounts = [item for destination, source in self.state.claude_mounts(self.args.claude_config_dir).items()
                   for item in ('--mount', f'type=bind,src={source},dst={destination}')]
-        return mounts + [item for destination, source in self.runtime_mounts().items()
+        return mounts + [item for destination, source in self.readonly_mounts().items()
                          for item in ('--mount', f'type=bind,src={source},dst={destination},readonly')]
 
     def claude_command(self):
@@ -207,11 +215,16 @@ class Session:
                 *self.managed_labels(client=True),
                 '--network', 'container:' + self.network_container_id, '--cap-drop', 'NET_RAW',
                 *self.common_environment(), *self.workspace_arguments(), *self.claude_state_arguments(),
-                '-e', 'CAGED_SUDO=' + ('1' if self.args.claude_sudo else '0'), images.IMAGES['claude']]
+                '-e', 'CAGED_SUDO=' + ('1' if self.args.claude_sudo else '0'),
+                *(['-e', 'CAGED_HOST_USER=' + self.args.host_bridge_user,
+                   '-e', 'CAGED_HOST_BRIDGE=' + hostbridge.target(self.args)] if self.args.host_bridge else []),
+                images.IMAGES['claude']]
 
     def prepare_claude_state(self):
         stateful.adopt_legacy_credentials(self.args)
         self.state.ensure(images.IMAGES['claude'])
+        if self.args.host_bridge:
+            hostbridge.prepare(self.state)
 
     def start_claude(self):
         if not self.network_running():
@@ -225,7 +238,19 @@ class Session:
         else:
             self.claude_process = subprocess.Popen(command)
         self.enroll_agent(self.instance.claude, 'claude')
-        return self.check_claude(settings_only=True)
+        result = self.check_claude(settings_only=True)
+        self.hint_missing_ssh()
+        return result
+
+    def hint_missing_ssh(self):
+        # States seeded before openssh-client was in the image lack `ssh`.
+        if not self.args.host_bridge:
+            return
+        found = engine.docker('exec', self.instance.claude, 'sh', '-c', 'command -v ssh && command -v rsync', check=False)
+        if found.returncode:
+            print("Notice: the host bridge needs ssh (and rsync for rsync host:) in the Claude environment; install "
+                  "them once with: ./cage shell -- sh -c 'sudo apt-get update && sudo apt-get install -y "
+                  "openssh-client rsync'", flush=True)
 
     def check_claude(self, settings_only=False):
         deadline = time.monotonic() + 50

@@ -47,7 +47,8 @@ def main():
     # Establish the deny policy before starting anything that can access the network.
     initialize()
     (ROOT / 'probe-mark').write_text(str(PROBE_MARK))
-    command(['iptables-restore', '-w', '5'], data=firewall_rules(address, proxy['port']))
+    command(['iptables-restore', '-w', '5'],
+            data=firewall_rules(address, proxy['port'], options.get('host_bridge_tcp')))
     command(['ip6tables-restore', '-w', '5'], data='''*filter
 :INPUT DROP [0:0]
 :FORWARD DROP [0:0]

@@ -11,7 +11,7 @@ TUN = "caged0"
 
 def make_config(proxy, secret):
     options = policy()
-    return {
+    config = {
         'mode': 'global',
         'log-level': 'warning',
         'ipv6': False,
@@ -54,6 +54,11 @@ def make_config(proxy, secret):
             'mtu': 1500,
         },
     }
+    host = options.get('host_bridge_tcp')
+    if host:
+        # The host bridge is reached directly through eth0, never via the node.
+        config['tun']['route-exclude-address'] = [f'{host[0]}/32']
+    return config
 
 
 def api(secret, path, data=None, method=None):

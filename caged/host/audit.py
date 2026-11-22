@@ -77,8 +77,10 @@ def run_audit(session):
                     and not state['HostConfig'].get('PidMode'), 'Unexpected host privilege or PID sharing')
             actual = {mount['Destination']: mount['Source'] for mount in state.get('Mounts', []) if mount['Type'] == 'bind'}
             require(actual == session.expected_mounts(role), 'Unexpected host filesystem mount in ' + role)
-            # Only the probe code and entrypoint are read-only; every state mount must be writable.
-            require(all(mount['RW'] != mount['Destination'].startswith(stateful.RUNTIME + '/')
+            # Only the probe runtime and the host bridge socket directory are
+            # read-only; every state mount must be writable.
+            readonly = set(session.readonly_mounts()) if role == 'claude' else set()
+            require(all(mount['RW'] != (mount['Destination'] in readonly)
                         for mount in state.get('Mounts', []) if mount['Type'] == 'bind'),
                     'A state mount is read-only or the probe runtime is writable')
             require(state['HostConfig']['AutoRemove'], 'Container does not remove its temporary data on exit')
