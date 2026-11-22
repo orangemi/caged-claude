@@ -242,6 +242,8 @@ IPv6 的输入、转发、输出也默认拒绝，仅允许回环。IPv4 输入�
 
 浏览器检查读取实际的 `Intl.DateTimeFormat()`、`navigator.language`、`navigator.languages` 和 `chrome://policy`。时区以浏览器自身的规范名称比较；系统检查核对时区文件是否指向同一个 zoneinfo 文件，以及该时区当前的实际 UTC 偏移，因此不固定 `+0800`，也适用于夏令时和合法的时区别名。
 
+浏览器容器按 kiosk 模式运行：镜像设置 `HARDEN_DESKTOP`、`HARDEN_OPENBOX`、`NO_DECOR` 和 `DISABLE_WINDOW_BUTTONS`，移除窗口关闭/最小化按钮、右键根菜单和 Alt+F4 等快捷键，并禁用终端、sudo、外部打开工具、Selkies 侧边栏、共享、文件传输和打印。主 Chromium 退出（被关闭或崩溃）后，`containers/browser/session.sh` 不会回退到桌面或终端，而是在同一画面显示本地崩溃页；只有宿主执行 `./cage down` 后重新 `./cage up` 才能恢复。`./cage shell browser` 仍是宿主侧明确进入容器的管理入口，不受此限制。
+
 ## 9. 进程与数据生命周期
 
 ### 9.1 服务入口与后台容器
