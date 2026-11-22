@@ -1,0 +1,141 @@
+# 配置参考
+
+日常使用只需要 [README](../README.md) 里的几项配置。本文是完整参考：配置文件、优先级、所有配置项、端口、workspace、launcher 的环境变量，以及从旧名称 caged-browser 升级的说明。
+
+## 配置文件
+
+```
+config/app.yaml      # 启动配置：节点选择、时区、语言、端口和出口策略
+config/mihomo.yaml   # mihomo 节点和凭证
+```
+
+整个 `config/` 目录已加入 Git 忽略。仓库只保留 [config.example/app.yaml](../config.example/app.yaml) 和不含真实节点信息的 [config.example/mihomo.yaml](../config.example/mihomo.yaml)，`./cage init` 从这两份模板生成配置；模板中的占位值不能直接用于连接。
+
+`config/app.yaml` 的 `proxy.node` 指定从 `config/mihomo.yaml` 选用的节点，命令行可以临时切换：`./cage up --node '🇸🇬 Singapore 02'`。启动器按项目位置寻找 `config/app.yaml`，从其他目录执行 `./cage` 也读取同一份配置。`--settings` 指定其他应用 YAML；`proxy.file_path` 或 `--proxy-file-path` 指定节点 YAML，省略时读取应用 YAML 同目录的 `mihomo.yaml`。
+
+节点文件可以自己填写，也可以从 Clash Verge 导入完整快照，例如 macOS 上：
+
+```bash
+./cage init --mihomo "$HOME/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/clash-verge.yaml"
+```
+
+不会自动读取或同步宿主上的代理配置。
+
+实际 `config/mihomo.yaml` 包含节点凭证，权限设为 `600`，随整个 `config/` 目录一起被 Git 忽略。它在会话结束后保留。配置更新后重启会话读取，不会自动同步 Mac 的后续修改。
+
+第一版支持独立 AnyTLS 节点；有 `dialer-proxy` 的链式节点会拒绝启动，而不是遗漏链路参数。复制的文件保留原始配置内容；容器运行时仍只提取所选节点，重新生成全局代理配置。
+
+## 配置优先级
+
+所有启动选项按 **命令行参数 > 环境变量 > `app.yaml` > 内置默认值** 解析，并且只校验最终生效的值。`--help` 列出完整选项。`config.example/app.yaml` 仅启用必选配置，可选项统一注释并注明默认值；需要覆盖默认值时取消对应注释。无默认值的选项缺失、键名拼错或生效的时区/端口非法时，会在启动容器前报错。
+
+可省略的默认项包括节点文件 `mihomo.yaml`、实例名 `caged-claude`、DoH 上游 `https://1.1.1.1/dns-query`、locale `en_US.UTF-8`、语言 `en-US`、跟随启动者的 UID/主 GID、共享内存 `1g`，以及整个 `ports` 块。节点、期望国家和时区仍由配置或覆盖项明确提供。
+
+| `app.yaml` 键 | 环境变量 | 命令行参数 |
+| --- | --- | --- |
+| 应用文件路径 | `CAGED_CLAUDE_SETTINGS` | `--settings` |
+| `proxy.file_path` | `CAGED_CLAUDE_PROXY_FILE_PATH` | `--proxy-file-path` |
+| `proxy.node` | `CAGED_CLAUDE_NODE` | `--node` |
+| `proxy.expected_country` | `CAGED_CLAUDE_EXPECTED_COUNTRY` | `--expected-country` |
+| `proxy.dns_upstream` | `CAGED_CLAUDE_DNS_UPSTREAM` | `--dns-upstream` |
+| `browser.timezone` | `CAGED_CLAUDE_TIMEZONE` | `--timezone` |
+| `browser.locale` | `CAGED_CLAUDE_LOCALE` | `--locale` |
+| `browser.language` | `CAGED_CLAUDE_LANGUAGE` | `--language` |
+| `browser.puid` / `browser.pgid` | `CAGED_CLAUDE_PUID` / `CAGED_CLAUDE_PGID` | `--puid` / `--pgid` |
+| `browser.shm_size` | `CAGED_CLAUDE_SHM_SIZE` | `--shm-size` |
+| `ports.ui` | `CAGED_CLAUDE_PORT` | `--port` |
+| `ports.controller` | `CAGED_CLAUDE_CONTROLLER_PORT` | `--controller-port` |
+| `ports.mixed` | `CAGED_CLAUDE_MIXED_PORT` | `--mixed-port` |
+| `ports.debug` | `CAGED_CLAUDE_DEBUG_PORT` | `--debug-port` |
+| `instance` | `CAGED_CLAUDE_INSTANCE` | `--instance` |
+| `workspace` | `CAGED_CLAUDE_WORKSPACE` | `--workspace`，可重复 |
+| `claude.config_dir` | `CAGED_CLAUDE_CLAUDE_CONFIG_DIR` | `--claude-config-dir` |
+| `claude.sudo` | `CAGED_CLAUDE_CLAUDE_SUDO` | `--claude-sudo` |
+| `state.dir` | `CAGED_CLAUDE_STATE_DIR` | `--state-dir` |
+| `ports.browser_probe` / `ports.claude_probe` | `CAGED_CLAUDE_BROWSER_PROBE_PORT` / `CAGED_CLAUDE_CLAUDE_PROBE_PORT` | `--browser-probe-port` / `--claude-probe-port` |
+| `monitor.tick` / `monitor.interval` | `CAGED_CLAUDE_MONITOR_TICK` / `CAGED_CLAUDE_MONITOR_INTERVAL` | `--monitor-tick` / `--monitor-interval` |
+| `monitor.lease` / `monitor.probe_timeout` | `CAGED_CLAUDE_MONITOR_LEASE` / `CAGED_CLAUDE_MONITOR_PROBE_TIMEOUT` | `--monitor-lease` / `--monitor-probe-timeout` |
+| `monitor.retry_initial` / `monitor.retry_max` | `CAGED_CLAUDE_MONITOR_RETRY_INITIAL` / `CAGED_CLAUDE_MONITOR_RETRY_MAX` | `--monitor-retry-initial` / `--monitor-retry-max` |
+
+例如，用环境变量改变时区，并用命令行覆盖环境变量中的端口：
+
+```bash
+CAGED_CLAUDE_TIMEZONE=Asia/Tokyo CAGED_CLAUDE_PORT=3102 ./cage up --port 3103
+```
+
+切换地区时同时指定节点和期望国家，例如 `--node '🇯🇵 Japan 01' --expected-country JP`。将 `proxy.expected_country` 设为 YAML `null` 或 `any`（命令行/环境变量使用 `any`）可以取消国家限制，仍检查连通性及审计中的出口一致性。
+
+`browser.language` 使用 `ja-JP` 等语言标签，自动生成 `ja-JP,ja` 偏好；`browser.locale` 控制系统 locale。两个应用的用户名固定为 `claude-user`；Claude 的 HOME 是 `/home/claude`，浏览器的是 `/config`。`puid`、`pgid` 默认都是 `host`，每次启动读取当前进程的 UID/主 GID；通常等同于运行终端的 `id -u` 和 `id -g`。可显式填写整数；环境变量和 CLI 仍按优先级分别覆盖。使用普通用户执行 `./cage up` 即可，使用 sudo 启动会读到 root 身份。时区文件在容器启动时设置，不再烘焙进镜像。
+
+`proxy.file_path` 省略时使用应用 YAML 同目录的 `mihomo.yaml`；在 YAML 中填写相对路径也基于该 YAML 所在目录。命令行和环境变量传入的相对路径基于调用目录。
+
+旧的 `proxy.config`、`CAGED_CLAUDE_PROXY_CONFIG`、`--config` 和 `--proxy-config` 仍作为兼容别名。相同来源同时提供新旧名称时，YAML 和环境变量使用新名称的值；命令行别名按出现顺序取最后一个值。CLI > ENV > YAML > 默认值的优先级不变。
+
+DoH 上游目前要求带路径的 HTTPS 公网 IPv4 URL，例如 `https://1.1.1.1/dns-query`，由程序追加固定节点标识，避免额外的域名引导解析。
+
+UI 只绑定宿主回环。DNS 的 53 端口和上游桌面镜像的 HTTPS 3001 是内部协议端口，不作为用户偏好覆盖；其他三个内部服务端口可配置，需互不冲突。全局代理、IPv6 阻断和默认拒绝防火墙保持固定的隔离约束。
+
+| 端口设置 | 默认值 | 实际用途 |
+| --- | --- | --- |
+| `ports.ui` | `3002` | Mac 上访问网页桌面的 HTTPS 入口；唯一发布到宿主的端口 |
+| `ports.controller` | `9090` | 容器内 mihomo 控制 API，启动器和审计用它核对模式与选定节点 |
+| `ports.mixed` | `17890` | 受随机密码保护的 HTTP/SOCKS 入口；密码只在网关私有 tmpfs，应用不能借它绕过暂停 |
+| `ports.debug` | `9222` | 容器内 Chromium DevTools，浏览器检查用它读取策略、时区、语言和出口 |
+
+内部端口不发布到 Mac，不占用 Mac 上对应端口；日常使用都可以不填写。
+
+`./cage up` 先启动 network 并核对出口，再启动 browser 和 claude。业务网络默认关闭，两种应用的环境与 DNS/出口证据通过后才放行。三个容器使用 `-d --rm`；任一步初始化或检查失败，本次启动创建的容器会回滚清理。启动成功后交给 Docker 运行，network 内继续监控，不保留 Mac 前台监督进程。关闭启动终端不会停止容器。
+
+browser 和 claude 复用同一份时区、locale、语言、UID/GID、代理环境变量清理和 DNS 配置，并共享网关的网络命名空间。会检查两个容器内的实际设置及出口。网关意外退出后，其他容器可以仍显示运行，但独立防火墙阻止公网回退直连；`./cage status` 会标记网关不可用，`./cage claude` 拒绝进入这种异常实例。使用 `./cage down` 后重新 `./cage up` 恢复。
+
+并行实例使用另一组名称和 UI 端口，例如 `./cage up --instance caged-test --port 3003`。查看和停止对应实例使用 `./cage status --instance caged-test`、`./cage down --instance caged-test`；进入使用 `./cage claude --instance caged-test`。`./cage claude --app-settings /path/to/app.yaml` 可切换应用配置，其他参数原样传给 Claude，例如 `./cage claude --model sonnet` 或 `./cage claude -p '问题'`。Claude 自身的 `--settings` 参数仍传给 Claude，不会当成项目应用配置。
+
+## Workspace 与 Claude 授权持久化
+
+在实际 `config/app.yaml` 中按需设置；不填写时不挂载 workspace：
+
+```yaml
+workspace:
+  - ~/Projects/my-project
+  - ~/Documents/notes
+```
+
+路径展开为宿主的绝对路径，并以相同路径读写挂载到 browser 和 claude，首个 workspace 是两个应用的工作目录。这样 Git 路径、文件引用和 Claude 项目标识不会因挂到 `/workspace` 而改变。相对路径在 YAML 中基于该 YAML 目录；CLI/环境变量的相对路径基于调用目录。目录必须已经存在。
+
+`CAGED_CLAUDE_WORKSPACE` 可以是单个路径或 JSON 路径数组，设为 `[]` 可清除配置中的列表；CLI 可重复 `--workspace /path`，覆盖整个列表。不会自动共享整个 Mac 主目录或 Docker socket，也不会修改 workspace 的文件属主。挂载后，其中的文件按普通权限可被两个应用读取和修改，包括目录中的隐藏文件。
+
+Claude 的登录凭证单独保存，不和环境状态放在一起：
+
+```text
+宿主：<项目>/config/claude/<实例>  →  Claude 容器：/home/claude/.claude（即 ~/.claude）
+CLAUDE_CONFIG_DIR=/home/claude/.claude
+```
+
+显式设置 `CLAUDE_CONFIG_DIR` 使 `.credentials.json`、`settings.json`、会话/记忆以及原本在 HOME 外层的 `.claude.json` 一并保存在这个目录中。默认不会复制宿主的 `.claude` 或 Keychain；首次通过 `./cage claude` 登录。容器中无法自动打开本机浏览器时，按 CLI 提示在宿主打开登录 URL 并粘贴返回代码。旧版本的 `config/.claude` 会在默认实例首次启动时移动到 `config/claude/caged-claude`，登录状态不变。
+
+`claude.config_dir` 是可选项，只能指向本项目 `config/` 下的子目录。目录权限为 `700`，授权文件由 Claude 管理。删除或重建 `state/` 都不会动它；有效登录令牌可继续使用，令牌本身仍有有效期。`config/` 整体已被 Git 忽略，也被排除在镜像构建上下文之外。
+
+## launcher 运行方式
+
+`./cage help` 和 `./cage init` 直接由 shell 完成。其他命令会在一个 launcher 容器里运行 Python 启动器（`caged/host`）：
+
+- 挂载 Docker socket，由它驱动宿主的 Docker；
+- 项目目录按原路径读写挂载，`$HOME` 和当前目录只读挂载，用于读取配置和校验 workspace；
+- launcher 镜像只含依赖，代码直接挂载，改代码不需要重建镜像。
+
+| 环境变量 | 作用 |
+| --- | --- |
+| `CAGED_MOUNTS` | 冒号分隔的额外只读目录，用于 `$HOME` 之外的 workspace 或配置文件 |
+| `CAGED_DOCKER_SOCK` | 指定 Docker socket；默认 `/var/run/docker.sock`，Linux 上会使用 `unix://` 形式的 `DOCKER_HOST` |
+| `CAGED_NATIVE=1` | 不用容器，直接用宿主机的 Python 3.9+ 运行（需要 PyYAML） |
+
+## 从 caged-browser 升级
+
+项目早期叫 caged-browser，现在所有名称都统一为 caged-claude：
+
+- **入口**：原来的 `./start`、`./stop`、`./status`、`./claude`、`./shell` 合并为 `./cage`；
+- **环境变量前缀**：`CAGED_BROWSER_*` 改为 `CAGED_CLAUDE_*`；
+- **默认实例名**：改为 `caged-claude`，容器名为 `caged-claude-network`、`-browser`、`-claude`；
+- **容器标签**：改为 `io.caged-claude.*`，镜像也会以新名字重建。
+
+旧版启动的容器不再受管理，可能占用 UI 端口。`./cage up` 和 `./cage status` 发现旧容器时会提示删除命令。`config/` 和 Claude 登录状态不受影响。

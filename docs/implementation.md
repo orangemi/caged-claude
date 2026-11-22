@@ -68,7 +68,7 @@ browser 与 claude 的应用用户名固定为 `claude-user`。UID/GID 默认值
 
 只有最终生效的值进入类型与范围校验，低优先级中被覆盖的无效值不会错误地阻止启动。无默认值的选项缺失、键名拼错或生效值非法时，在创建容器前失败；显式填写无效值不会被默认值掩盖。
 
-`proxy.file_path` 省略时读取应用 YAML 同目录的 `mihomo.yaml`，填写相对路径时也以该目录为基准；CLI/环境变量指定的相对路径以调用目录为基准。旧 YAML 键 `proxy.config` 及旧环境变量、CLI 别名仍兼容。`proxy.expected_country` 可用两位国家代码，也可以设为 `null`/`any` 取消国家限制；其他网络检查继续执行。完整字段映射见 [README 的配置优先级](../README.md#配置优先级)。
+`proxy.file_path` 省略时读取应用 YAML 同目录的 `mihomo.yaml`，填写相对路径时也以该目录为基准；CLI/环境变量指定的相对路径以调用目录为基准。旧 YAML 键 `proxy.config` 及旧环境变量、CLI 别名仍兼容。`proxy.expected_country` 可用两位国家代码，也可以设为 `null`/`any` 取消国家限制；其他网络检查继续执行。完整字段映射见 [配置参考的配置优先级](configuration.md#配置优先级)。
 
 解析后的非机密策略通过 `CAGED_CLAUDE_POLICY` 传给网关、浏览器、Claude 和检查容器；每次执行探针也显式传入同一份策略。节点密码仍仅通过网关标准输入传输。这样改变时区、语言或国家时，生成配置、真实运行和审计的期望值同步变化。
 
