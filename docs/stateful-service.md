@@ -61,7 +61,7 @@
 
 ### 4.1 目录布局
 
-每个实例一个状态目录，默认是项目下的 `state/<实例>/`（加入 `.gitignore`），可用 `state.dir` / `--state-dir` 改到其他磁盘：
+每个实例一个状态目录，放在项目下的 `state/<实例>/`（加入 `.gitignore`），可用 `state.dir` / `--state-dir` 改到其他磁盘：
 
 ```text
 state/<实例>/
@@ -74,14 +74,27 @@ state/<实例>/
 │   ├── opt/   → /opt
 │   ├── srv/   → /srv
 │   └── root/  → /root
-├── home/      → /home    # 用户层：claude-user 的 HOME 是 /home/claude，包含 .claude
-├── archive/<时间>/        # reset 移入的旧 system/，附 manifest.json
+├── home/      → /home    # 用户层：claude-user 的 HOME 是 /home/claude
+├── browser/   → 浏览器容器的 /config   # Chromium 资料：登录、Cookie、历史，700 权限
+├── archive/<时间>/        # reset 移入的旧 system/（或 home/、browser/），附 manifest.json
 └── snapshots/<时间>.tar.zst
 ```
 
 不持久化的目录和真实 Linux 重启后的表现一致：`/proc`、`/sys`、`/dev`、`/run`、`/tmp` 由 Docker 或 tmpfs 提供。Docker 管理的 `/etc/hosts`、`/etc/hostname`、`/etc/resolv.conf` 会叠加在 `/etc` 的挂载之上，所以 DNS 仍由网关控制。
 
-`home` 和 `system` 分开存放：用户内容和系统层可以分别重置、备份。
+`system`、`home`、`browser` 分开存放，可以分别重置和备份。
+
+Claude 的登录凭证**单独存放**，不放在 `state/` 里：
+
+```text
+config/claude/<实例>/  → /home/claude/.claude   （叠加在 home 的挂载之上，700 权限）
+```
+
+- 凭证最敏感，放在本来就是 `700`、专门存私有配置的 `config/` 中，不和约 1 GB 的状态一起打包或复制。
+- 体积小，备份和迁移可以只拷这一个目录。
+- `reset --home`，甚至 `destroy` 整个环境之后，仍然可以保持登录，不必重新授权。
+- `CLAUDE_CONFIG_DIR=/home/claude/.claude`，原本在 HOME 外层的 `.claude.json` 也放在这里。
+- 按实例分目录，两个实例不会同时写同一份凭证。`claude.config_dir` 仍然可以覆盖这个位置。
 
 ### 4.2 首次初始化（seed）
 
@@ -99,6 +112,7 @@ state/<实例>/
 ```text
 --mount type=bind,src=state/<实例>/system/etc,dst=/etc     （usr、var、opt、srv、root 同理）
 --mount type=bind,src=state/<实例>/home,dst=/home
+--mount type=bind,src=config/claude/<实例>,dst=/home/claude/.claude
 --mount type=bind,src=<项目>/caged,dst=/caged-runtime/caged,readonly
 --mount type=bind,src=<项目>/containers/claude/entrypoint.sh,dst=/caged-runtime/entrypoint,readonly
 ```
@@ -106,7 +120,8 @@ state/<实例>/
 - **标记必须存在**：状态目录存在但 `.caged-state` 缺失、实例 ID 不符，或配置里记录过这个实例但目录不见了，都拒绝启动，提示“环境存储不可用”，绝不自动重新初始化（借鉴 Claude-Cage 的存储标记）。
 - **身份**：`claude-user` 的 UID/GID 跟随宿主（PUID/PGID）。entrypoint 用 `usermod` 修改的 `/etc/passwd` 位于持久化的 `/etc` 中，所以会保留。PUID 变化时，只在属主不一致的情况下 chown `/home/claude`。
 - **启动器自己的代码不进入状态目录**：entrypoint、环境探针、检查程序从项目目录只读挂载到 `/caged-runtime`，用 `PYTHONPATH=/caged-runtime` 运行。这样用户（包括容器内 root）无法修改它们，项目更新后下次启动就生效。探针依赖状态里的 `python3`；用户如果弄坏了 `python3`，探针会失败，网关随即断网（失败即断网），不会放行。
-- 网关和浏览器不变：网关的凭证和密钥仍只放在 tmpfs，不持久化；浏览器资料仍是临时的（是否持久化见 §10）。
+- 网关不变：节点凭证和控制密钥仍只放在 tmpfs，不持久化。
+- 浏览器只持久化资料目录：`state/<实例>/browser` 挂载到浏览器容器的 `/config`；浏览器镜像本身的系统仍是临时的。这里有一个坑：Chromium 的 `SingletonLock` 记录了主机名，而现在网关容器每次重建主机名都会变，新主机名会让 Chromium 判定资料“正被另一台电脑使用”而拒绝打开。所以要做两件事：网关容器使用固定主机名 `caged-<实例>`（两个应用共享它的网络命名空间和主机名）；浏览器启动前清理残留的 `Singleton*` 锁文件。
 
 ### 4.4 实时性与一致性
 
@@ -114,13 +129,40 @@ state/<实例>/
 - `./cage down` 停止容器后，再对状态目录执行一次 `sync`，缩短这个窗口。
 - 容器被 kill、进程消失、网络断开都不影响已经写入的文件。下次 `./cage up` 重新挂载同一份状态即可。
 
+### 4.5 各类内容保存在哪里
+
+二进制和软件：
+
+| 安装方式 | 实际写入位置 | 状态目录 |
+| --- | --- | --- |
+| `apt install` | 程序在 `/usr/bin`、`/usr/lib`，包数据库在 `/var/lib/dpkg` | `system/usr` + `system/var` |
+| root 执行 `npm i -g`（包括 Claude Code 升级） | `/usr/local/lib/node_modules`、`/usr/local/bin` | `system/usr` |
+| `pip install --user`、`pipx`、`cargo install` | `~/.local`、`~/.cargo` | `home` |
+| nvm、mise、Linux Homebrew 等用户级工具 | `~/.nvm`、`~/.local/share/mise` 等 | `home` |
+| 手动下载的二进制 | `/usr/local/bin`、`/opt/<软件>`、`~/bin` | `system/usr`、`system/opt`、`home` |
+
+两点约束：
+
+- **`/usr` 与 `/var` 必须作为一个整体。** 文件在 `/usr`，“装了什么”的记录在 `/var/lib/dpkg`。只保存其中一个，apt 就会认为系统损坏。所以两者同属 `system/`，备份、归档、回滚都整体进行，不拆开。
+- **merged-usr 布局**下 `/bin`、`/sbin`、`/lib` 都是指向 `/usr` 的符号链接，保存 `/usr` 就覆盖了全部系统二进制。
+
+下载与数据：
+
+| 内容 | 位置 | 是否保留 |
+| --- | --- | --- |
+| HOME 下的一切：下载的文件、模型、数据集、`~/.cache`、`~/.npm`、pip 缓存 | `/home/claude/…` | 保留 |
+| workspace 项目文件 | 宿主原路径（直接挂载） | 保留 |
+| apt 缓存、`/var/tmp` | `/var` | 保留 |
+| 浏览器登录、Cookie、历史 | 浏览器 `/config` | 保留 |
+| `/tmp` | tmpfs | **不保留**，和真实 Linux 重启一样（Debian 13 的 `/tmp` 默认就是 tmpfs）。需要在文档和 `./cage claude` 的提示中写明 |
+
 ## 5. 命令语义
 
 | 命令 | 行为 |
 | --- | --- |
 | `./cage up` | 未初始化则 seed；然后挂载状态启动，网络检查流程不变 |
 | `./cage down` | 停止并删除容器，状态目录保留，并执行 `sync` |
-| `./cage reset [--home]` | 停止后把 `system/` **移动**到 `archive/<时间>/`（同盘上是改名，瞬间完成），再从当前镜像重新 seed 系统层。HOME 默认保留，`--home` 时一并归档 |
+| `./cage reset [--home] [--browser]` | 停止后把 `system/` **移动**到 `archive/<时间>/`（同盘上是改名，瞬间完成），再从当前镜像重新 seed 系统层。HOME 和浏览器资料默认保留，`--home`、`--browser` 时分别一并归档。Claude 凭证在 `config/` 中，任何 reset 都不会触及 |
 | `./cage archive list\|restore <时间>\|prune <时间>` | 查看、回滚、删除归档；删除需要输入实例名确认 |
 | `./cage snapshot` | `docker pause` 应用容器，打包 `system/` 和 `home/` 为 `snapshots/<时间>.tar.zst`，再 `unpause`。可用宿主 cron 或 systemd timer 定时调用 |
 | `./cage restore <快照>` | 停止后把当前状态归档，再从快照恢复 |
@@ -143,17 +185,33 @@ state/<实例>/
 
 ## 7. 基础镜像
 
-- 使用固定 digest 的 **Debian 13（trixie）slim**，和 Claude-Cage 以及官方 node 镜像所用的发行版一致。如果更习惯 Ubuntu，可以换成 `ubuntu:24.04`，方案的其余部分不变（见 §10）。
+- **已确认**：使用固定 digest 的 **Debian 13（trixie）slim**。当时与 Ubuntu 26.04 LTS 的比较：
+
+  | 方面 | Debian 13 | Ubuntu 26.04 LTS |
+  | --- | --- | --- |
+  | snap | 没有 snap，`apt install chromium`、`firefox` 是真正的 deb 包 | 这几个包是指向 snap 的过渡包，Docker 里不能运行 snap，**直接装不上** |
+  | Node.js | 官方 `node:24-trixie-slim` 就是 Debian，复制过来的二进制与系统库完全一致 | 可以用（glibc 向后兼容），但不完全一致 |
+  | 生态 | 一般 | 更好，很多第三方软件只提供 Ubuntu 的 PPA 或安装说明 |
+  | 支持周期 | 约 3 年，加 LTS 共 5 年 | 标准 5 年 |
+
+  推荐 Debian，主要原因是 snap：这个环境会长期保留，在里面装浏览器（比如跑 Playwright 测试）是常见需求。
 - Node.js 通过多阶段构建，从固定版本的官方 `node:24-trixie-slim` 复制 `/usr/local` 下的 node、npm、corepack，不添加第三方 apt 源。Claude Code 继续使用固定版本。
 - 镜像只用于 seed 和提供容器外壳，内容被挂载覆盖，因此不再把运行时代码 COPY 进镜像。
 - 预计每个实例的初始占用约 0.8–1.2 GB，主要是 `/usr`。
 
 ## 8. 风险与限制
 
-1. **macOS 的文件共享能否保真**：Linux（包括 WSL 的 ext4）上 bind mount 能完整保留属主、setuid、硬链接。OrbStack 和 Docker Desktop 的 macOS 文件共享未必能，所以由 §4.2 的能力检测把关。检测不通过时，先只支持 Linux/WSL；macOS 的替代方案（例如在 Docker 虚拟机里放 ext4 镜像文件）作为后续议题。
+1. **只支持 Linux/WSL**（已确认）：Linux（包括 WSL 的 ext4）上 bind mount 能完整保留属主、setuid、硬链接。macOS 不在支持范围内，也不做替代存储。§4.2 的能力检测仍然保留，检测不通过就明确报错。
 2. **宿主上出现 root 属主的文件**：`system/` 下的文件属主是 root，宿主的普通用户不能直接删除或修改，所以由 `./cage destroy` 和 `archive prune` 通过容器处理。备份时需要 `sudo tar --numeric-owner`，或使用 `./cage snapshot`。
 3. **空间**：每个实例完整复制一份系统，且不是增量存储。宿主文件系统支持 reflink（btrfs、XFS、APFS）时，snapshot 和 archive 可以改用 `cp --reflink` 优化。
 4. **持久化的系统也会持久化用户的破坏**：例如修改 `/etc/profile`、替换 `python3`。网络边界由网关的命名空间和防火墙保证，与容器内系统无关；探针代码只读挂载，失败时断网。因此安全边界不变，最坏情况只是环境不可用，可以 `reset`。
+6. **sudo（已确认）**：默认给 `claude-user` 免密码 sudo，`claude.sudo: false` 可以关闭。
+   - 理由：这是一台可以随意修改的长期环境，Claude 经常需要 `apt install`。
+   - 网络边界不受影响：容器内 root 没有 `NET_ADMIN`，改不了网关防火墙；改 DNS 也会被公网 53/853 的拦截规则挡住。
+   - 能改的只有 `system/`，弄坏了可以 `reset` 或从归档回滚。
+   - **代价**：环境探针以 root 运行，用私钥给检查结果签名。给了 sudo，Claude 或用户就能读到私钥，也能停掉探针。时区、语言等环境一致性检查会因此从防篡改降级为尽力而为，网络断开约束不受影响。
+   - 关闭 sudo 时，需要 root 就从宿主执行 `./cage shell --root`。
+   - “只允许 sudo apt”不提供：apt 可以安装任意 deb 并以 root 执行包里的脚本，实际上等于完整 root。
 5. **不提供 init/systemd**：服务的文件和配置会保留，但不会自动运行。Claude-Cage 用 systemd 需要额外权限，本方案不采用（见 §10）。
 
 ## 9. 迁移与实现阶段
@@ -162,15 +220,16 @@ state/<实例>/
 
 现有实例是 `--rm` 容器，系统层本来就不会保留，所以只需要迁移 Claude 登录状态：
 
-- 首次 seed 时，把 `config/.claude` **复制**到 `state/<实例>/home/claude/.claude`；
-- 原目录保留到用户确认后再删除；
-- `CLAUDE_CONFIG_DIR` 改为 `/home/claude/.claude`，`HOME` 从 `/config` 改为 `/home/claude`。
+- 默认实例首次启动时，如果 `config/claude/<实例>/` 不存在而 `config/.claude` 存在，就把后者**移动**过去，登录状态不变。同一块盘上只是改名；失败时保持原样；
+- `CLAUDE_CONFIG_DIR` 改为 `/home/claude/.claude`，`HOME` 从 `/config` 改为 `/home/claude`；
+- 浏览器资料目前是临时的，没有需要迁移的内容。
 
 ### 阶段 1：持久化主体
 
 - 状态目录布局、标记、锁、能力检测、原子 seed；
-- 挂载方案、`/caged-runtime` 只读运行时、HOME 迁移；
-- Debian 基础镜像；
+- 挂载方案、`/caged-runtime` 只读运行时、HOME 迁移、Claude 凭证单独挂载；
+- 浏览器资料持久化、网关固定主机名、清理 Chromium 锁文件；
+- 新的基础镜像（按 §7 的确认结果）、sudo 开关；
 - `down` 时 `sync`。
 
 ### 阶段 2：维护命令
@@ -179,7 +238,7 @@ state/<实例>/
 
 ### 阶段 3：按需扩展
 
-浏览器资料持久化、用户级自启动脚本、macOS 替代存储。
+用户级自启动脚本。
 
 ### 测试（集成测试使用独立实例，不连接真实节点）
 
@@ -187,13 +246,17 @@ state/<实例>/
 - 写入过程中 `docker kill`，已完成的写入应全部存在；
 - 标记缺失、实例 ID 不符、状态目录不存在时拒绝启动；seed 中断后可以重来；
 - 能力检测：模拟不支持属主保存的目录时拒绝启动；
-- `reset` 保留 HOME 并可回滚；`snapshot`/`restore` 往返一致；
+- `reset` 保留 HOME、浏览器资料和 Claude 凭证，并可回滚；`snapshot`/`restore` 往返一致；
+- 浏览器登录后 `docker kill` 网关和浏览器，再 `up`，Cookie 仍在，Chromium 不报配置被占用；
 - 网络边界回归：现有 verify/audit 全部通过，探针运行时不可写。
 
-## 10. 待确认
+## 10. 决定记录
 
-1. 基础镜像用 **Debian 13**（推荐，与参考项目和官方 node 镜像一致）还是 **Ubuntu 24.04**？
-2. 状态目录默认放在**项目内 `state/`**（推荐，与 `config/` 并列），还是用户目录下的 `~/.caged-claude/`？
-3. 容器内是否给 `claude-user` 提供 `sudo`？不提供时，需要 root 可以用 `./cage shell --root`。
-4. 浏览器资料（登录、Cookie）是否也要持久化？目前的设计是临时的。
-5. macOS 能力检测不通过时，是先只支持 Linux/WSL，还是把 macOS 替代存储提前到阶段 1？
+| 问题 | 结论 |
+| --- | --- |
+| 状态目录位置 | 项目内 `state/<实例>/`（已确认） |
+| Claude 凭证 | 单独存放在 `config/claude/<实例>/`，不随 `state/` 打包或重置（已确认） |
+| 浏览器登录与 Cookie | 持久化到 `state/<实例>/browser/`，与 Claude 系统层分开（已确认） |
+| macOS | 不支持系统级持久化，能力检测不通过就报错（已确认） |
+| 基础镜像 | Debian 13（trixie）slim，固定 digest（已确认，比较见 §7） |
+| sudo | 默认免密码 sudo，`claude.sudo: false` 可关闭（已确认，代价见 §8 第 6 条） |
