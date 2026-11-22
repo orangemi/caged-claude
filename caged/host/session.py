@@ -202,7 +202,8 @@ class Session:
                          for item in ('--mount', f'type=bind,src={source},dst={destination},readonly')]
 
     def claude_command(self):
-        return ['docker', 'run', '--rm', '--init', '--name', self.instance.claude,
+        # No --init: the image's PID 1 is caged/runtime/init.py (see its docstring).
+        return ['docker', 'run', '--rm', '--name', self.instance.claude,
                 *self.managed_labels(client=True),
                 '--network', 'container:' + self.network_container_id, '--cap-drop', 'NET_RAW',
                 *self.common_environment(), *self.workspace_arguments(), *self.claude_state_arguments(),

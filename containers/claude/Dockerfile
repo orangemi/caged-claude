@@ -27,5 +27,7 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # at /caged-runtime, outside the persisted directories.
 ENV HOME=/home/claude CLAUDE_CONFIG_DIR=/home/claude/.claude DISABLE_AUTOUPDATER=1
 WORKDIR /home/claude
-ENTRYPOINT ["/bin/bash", "/caged-runtime/entrypoint.sh"]
+# Not `docker run --init`: Docker mounts its init at /sbin/docker-init, which
+# the persisted /usr mount hides (merged-usr). The runtime ships its own.
+ENTRYPOINT ["/usr/bin/python3", "/caged-runtime/caged/runtime/init.py", "/bin/bash", "/caged-runtime/entrypoint.sh"]
 CMD ["sleep", "infinity"]
