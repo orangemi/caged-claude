@@ -43,6 +43,32 @@ def stop_managed(name, session_id=None):
     raise CageError('Container did not finish removal: ' + name)
 
 
+def wait_running(name, timeout, on_poll=None, interval=0.2):
+    """Return the container state once it runs, or None after the timeout.
+
+    on_poll runs after each unsuccessful check and may raise to abort early."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = inspect(name)
+        if state and state['State']['Running']:
+            return state
+        if on_poll is not None:
+            on_poll()
+        time.sleep(interval)
+    return None
+
+
+# Atomically writes stdin to argv[1] with owner-only permissions, so secrets
+# reach a private tmpfs without passing through Docker env or arguments.
+PRIVATE_WRITER = ("import os,sys; os.umask(0o077); p=sys.argv[1]; f=open(p+'.tmp','w'); "
+                  "f.write(sys.stdin.read()); f.close(); os.rename(p+'.tmp',p)")
+
+
+def write_private(container, path, payload, timeout):
+    return subprocess.run(['docker', 'exec', '-i', container, 'python3', '-c', PRIVATE_WRITER, path],
+                          input=payload, text=True, capture_output=True, timeout=timeout)
+
+
 def ensure_names_available(names):
     for name in names:
         if inspect(name) is not None:

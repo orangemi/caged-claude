@@ -45,9 +45,7 @@ class Session:
                 raise CageError(f'Local port {self.args.port} is already in use; select another with --port.')
         images.build('network')
         command = ['docker', 'run', '--rm', '-i', '--name', self.instance.network,
-                   '--label', LABEL + '=' + str(ROOT),
-                   '--label', LAYOUT_LABEL + '=' + LAYOUT_VERSION,
-                   '--label', 'io.caged-browser.session=' + self.session_id,
+                   *self.managed_labels(),
                    '--cap-add', 'NET_ADMIN', '--device', '/dev/net/tun',
                    '--read-only', '--tmpfs', '/run/caged:rw,noexec,nosuid,size=32m',
                    '--tmpfs', '/tmp:rw,noexec,nosuid,size=16m',
@@ -59,10 +57,7 @@ class Session:
             command.insert(2, '-d')
             command += ['--bootstrap-file', '/run/caged/bootstrap.json']
             engine.call(command)
-            # Credentials cross stdin into private tmpfs, never Docker env/args.
-            writer = "import os,sys; os.umask(0o077); p='/run/caged/bootstrap.json'; data=sys.stdin.read(); open(p+'.tmp','w').write(data); os.rename(p+'.tmp',p)"
-            result = subprocess.run(['docker', 'exec', '-i', self.instance.network, 'python3', '-c', writer],
-                                    input=payload, text=True, capture_output=True, timeout=30)
+            result = engine.write_private(self.instance.network, '/run/caged/bootstrap.json', payload, timeout=30)
             if result.returncode:
                 raise CageError('Cannot initialize detached gateway; no proxy configuration was printed')
         else:
@@ -116,22 +111,17 @@ class Session:
 
     def start_check(self):
         command = ['docker', 'run', '--rm', '--name', self.instance.check,
-                   '--label', LABEL + '=' + str(ROOT),
-                   '--label', LAYOUT_LABEL + '=' + LAYOUT_VERSION,
-                   '--label', 'io.caged-browser.session=' + self.session_id,
+                   *self.managed_labels(),
                    '--network', 'container:' + self.network_container_id, '--cap-drop', 'ALL',
                    '-e', POLICY_ENV + '=' + json.dumps(self.policy),
                    *EMPTY_PROXY_ENV, '--entrypoint', 'sleep', images.IMAGES['network'], 'infinity']
         self.check_process = subprocess.Popen(command)
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            state = engine.inspect(self.instance.check)
-            if state and state['State']['Running']:
-                return
+
+        def exited():
             if self.check_process.poll() is not None:
                 raise CageError('Network probe container did not start')
-            time.sleep(0.2)
-        raise CageError('Network probe startup timed out')
+        if engine.wait_running(self.instance.check, 15, exited) is None:
+            raise CageError('Network probe startup timed out')
 
     def verify(self):
         self.start_clients()
@@ -150,14 +140,17 @@ class Session:
         # Keep the launcher's terminal in normal mode so Ctrl+C always reaches
         # its cleanup handler; the GUI does not need a Docker pseudo-terminal.
         return ['docker', 'run', '--rm', '-i',
-                   '--name', self.instance.browser, '--label', LABEL + '=' + str(ROOT),
-                   '--label', LAYOUT_LABEL + '=' + LAYOUT_VERSION,
-                   '--label', 'io.caged-browser.session=' + self.session_id,
-                   '--label', 'io.caged-browser.network-session=' + self.network_session_id,
+                   '--name', self.instance.browser, *self.managed_labels(client=True),
                    '--network', 'container:' + self.network_container_id,
                    '--cap-drop', 'NET_RAW', '--shm-size=' + self.args.shm_size,
                    *self.common_environment(), *self.workspace_arguments(),
                    '-e', 'CHROME_CLI=' + flags, images.IMAGES['browser']]
+
+    def managed_labels(self, client=False):
+        labels = {LABEL: str(ROOT), LAYOUT_LABEL: LAYOUT_VERSION, 'io.caged-browser.session': self.session_id}
+        if client:
+            labels['io.caged-browser.network-session'] = self.network_session_id
+        return [item for key, value in labels.items() for item in ('--label', f'{key}={value}')]
 
     def common_environment(self):
         values = {'PUID': self.args.puid, 'PGID': self.args.pgid, 'TZ': self.args.timezone,
@@ -181,10 +174,7 @@ class Session:
 
     def claude_command(self):
         return ['docker', 'run', '--rm', '--init', '--name', self.instance.claude,
-                '--label', LABEL + '=' + str(ROOT),
-                '--label', LAYOUT_LABEL + '=' + LAYOUT_VERSION,
-                '--label', 'io.caged-browser.session=' + self.session_id,
-                '--label', 'io.caged-browser.network-session=' + self.network_session_id,
+                *self.managed_labels(client=True),
                 '--network', 'container:' + self.network_container_id, '--cap-drop', 'NET_RAW',
                 *self.common_environment(), *self.workspace_arguments(),
                 '--mount', f'type=bind,src={self.args.claude_config_dir},dst=/config/.claude', images.IMAGES['claude']]
@@ -242,7 +232,7 @@ class Session:
                              f'https://127.0.0.1:{self.args.port}/'])
                 print('Remote browser UI: ' + page.stdout.splitlines()[0], flush=True)
                 return json.loads(result.stdout)
-            last_error = result.stdout.strip()
+            last_error = (result.stdout or result.stderr).strip()
             if self.detached:
                 current = engine.inspect(self.instance.browser)
                 if current is None or not current['State']['Running']:
@@ -266,18 +256,10 @@ class Session:
         return self.check_browser(settings_only=True)
 
     def enroll_agent(self, container, role):
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            state = engine.inspect(container)
-            if state and state['State']['Running']:
-                break
-            time.sleep(0.2)
-        else:
+        if engine.wait_running(container, 20) is None:
             raise CageError('Application did not start: ' + role)
-        writer = "import os,sys; os.umask(0o077); p='/run/caged-agent.json'; open(p+'.tmp','w').write(sys.stdin.read()); os.rename(p+'.tmp',p)"
-        result = subprocess.run(['docker', 'exec', '-i', container, 'python3', '-c', writer],
-                                input=json.dumps({'role': role, 'session': self.session_id, 'key': self.agent_keys[role]}),
-                                capture_output=True, text=True, timeout=10)
+        payload = json.dumps({'role': role, 'session': self.session_id, 'key': self.agent_keys[role]})
+        result = engine.write_private(container, '/run/caged-agent.json', payload, timeout=10)
         if result.returncode:
             raise CageError('Cannot enroll private application probe: ' + role)
         if role == 'browser':
@@ -322,6 +304,11 @@ class Session:
                     process.wait(timeout=15)
                 except subprocess.TimeoutExpired:
                     process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
 
     def wait_ready(self, timeout=50):
         process, session_id = self.gateway_process, self.session_id
