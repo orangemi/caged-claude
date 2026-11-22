@@ -15,7 +15,7 @@ Claude 在笼子里写代码，但有些事必须回到宿主机上做：
 
 ## 2. 原则
 
-1. **不开网络口子。** 笼子和宿主之间通过一个 Unix socket 文件通信，不经过网卡、TUN 或代理节点，网关防火墙一条规则都不改。在 Linux/WSL 上，这是同一个内核里的进程间通信，延迟可以忽略。
+1. **尽量不开网络口子。** Linux/WSL 上，笼子和宿主之间通过一个 Unix socket 文件通信，不经过网卡、TUN 或代理节点，网关防火墙一条规则都不改，延迟可以忽略。Mac 上 socket 无法跨越 Docker 的虚拟机，所以宿主作为唯一的特例，只放行一个回环端口，并且直连、不经过节点（§6.2）。
 2. **宿主命令遵守宿主自己的环境。** 通过桥执行的命令，网络、代理、PATH、凭证都按宿主本来的配置：宿主有代理就走代理，没有就直连。桥不强加笼子的出口规则。笼子里的流量仍然只走节点，两者互不影响。
 
    例如宿主已经连在公司的 AWS 内网（VPN 或专线）里，而笼子没有这个网络。通过桥回到宿主后，`ssh -J host aws-box` 由宿主直接连到 AWS 内网，不经过代理节点，也不需要给笼子开任何内网口子。
@@ -158,17 +158,46 @@ host_bridge:
 
 | 宿主 | 传输方式 | 说明 |
 | --- | --- | --- |
-| Linux | Unix socket bind mount | 同一内核，可靠 |
-| WSL | Unix socket bind mount | 项目和状态需要放在 WSL 的 Linux 文件系统内，状态持久化本来也要求这一点 |
-| Mac | **待实测** | Docker 跑在 Linux 虚拟机里，socket 要穿过虚拟机的文件共享，OrbStack 与 Docker Desktop 的支持程度不同 |
+| Linux | Unix socket（`transport: unix`） | 同一内核，可靠 |
+| WSL | Unix socket（`transport: unix`） | 项目和状态需要放在 WSL 的 Linux 文件系统内，状态持久化本来也要求这一点 |
+| Mac | **回环 TCP（`transport: tcp`）** | Unix socket 无法跨越 macOS 与 Docker 的 Linux 虚拟机，见下方实测 |
 
-Mac 上如果 socket 无法穿过文件共享，备选方案是：
+`transport: auto`（默认）按真实宿主选择：`./cage` 把 `uname -s` 通过 `CAGED_HOST_OS` 传给 launcher，因为 launcher 容器里看到的永远是 Linux。
 
-- 宿主监听进程改为监听 Mac 的 `127.0.0.1:<端口>`；
-- 容器通过 `host.docker.internal` 连接；
-- 网关上增加一条**精确到 IP 和端口、不进 TUN 直接出去**的规则。
+### 6.1 Mac 实测（维护者，2026-11）
 
-这仍然是直连，不会绕到代理节点。容器侧的 `ProxyCommand` 换成 TCP 版本，`ssh host` 的用法不变。这是你以前那种白名单的规范做法，只在 socket 不可用时启用，并在 `./cage status` 中标明。
+环境：macOS 26.5.2、OrbStack 2.2.5、Docker 29.8.2、Apple Silicon。
+
+| 实验 | 结果 |
+| --- | --- |
+| Mac 监听 socket，容器挂载后连接（单文件和整个目录都试过） | 失败，`ECONNREFUSED` |
+| 容器在挂载目录里创建 socket，Mac 连接 | 失败 |
+| 容器在 Linux 卷里创建 socket，Mac 通过 `~/OrbStack` 连接 | 失败 |
+| 两个容器通过共享 socket 通信 | 成功 |
+| Mac 与容器之间走 TCP | 双向成功 |
+| 容器 Unix socket → TCP 中转 → Mac Unix socket | 成功 |
+
+结论：共享路径不会把 macOS 和 Linux 两个内核里的 socket 端点连起来。OrbStack 只为 Docker 自己的 socket 和 ssh-agent 做了专门转发；通用 socket 挂载的需求（OrbStack issue #62）目前仍未解决。
+
+### 6.2 Mac 的做法：宿主作为网关唯一的直连特例
+
+宿主是一个特例：除了代理节点，它是网关**唯一**允许直接连接的目标，而且只放行一个端口。
+
+- **宿主侧**：`bridge.py` 监听 Mac 的 `127.0.0.1:<端口>`。只绑定回环地址，局域网访问不到；容器通过 Docker 的 `host.docker.internal` 转发进来。端口默认按实例名推算，落在 41000–41999 之间，同一实例每次相同；也可以用 `host_bridge.port` 指定。
+- **launcher**：启动时把 `host.docker.internal` 解析成 IPv4 地址（OrbStack 上是 `0.250.250.254`），可以用 `host_bridge.address` 指定。如果解析结果是公网地址，就拒绝启动。地址和端口写进运行策略 `host_bridge_tcp`，交给网关。
+- **网关防火墙**：只增加两条规则：
+
+  ```text
+  -A INPUT  -i eth0 -s <宿主>/32 -p tcp --sport <端口> -m conntrack --ctstate ESTABLISHED -j ACCEPT
+  -A OUTPUT -o eth0 -d <宿主>/32 -p tcp --dport <端口> -j ACCEPT
+  ```
+
+  这两条位于网络许可开关和私网丢弃规则之前。所以 `./cage pause` 断开公网时，`ssh host` 照常可用，因为它连的是宿主，不是互联网。宿主上的其他端口、其他私网地址仍然被丢弃。这两条规则和其他规则一起安装、一起计入快照，持续检查会核对它们没有被改动。
+- **TUN**：mihomo 的 `route-exclude-address` 把 `<宿主>/32` 排除在 TUN 路由之外，所以这条连接直接从网关网卡出去，不会被送到代理节点。
+- **容器侧**：仍然是 `ssh host`。entrypoint 把 ProxyCommand 的目标设为 `tcp:<宿主>:<端口>`；密钥、固定的 host key 和用户名都和 Linux 一样，从只读的 `/run/caged-host/` 读取。
+- **Linux 和 WSL 完全不受影响**：不使用 TCP 时，网关的规则和 TUN 配置与之前逐字节相同。
+
+Docker Desktop on Mac 尚未实测。它的 `host.docker.internal` 一般解析到 `192.168.65.254`，也能连到 Mac 回环地址上的服务，但还需要验证。
 
 ## 7. 安全边界（审批与审计除外）
 
@@ -182,7 +211,7 @@ Mac 上如果 socket 无法穿过文件共享，备选方案是：
 
 - **审批**：哪些命令需要确认、在哪里确认、如何防止伪造确认界面。SSH 提供了现成的扩展点（`authorized_keys` 的 `command=`、`restrict`，以及 ForceCommand 包装器）。
 - **审计**：桥的会话日志，与笼子内命令的记录统一。Claude Code 自己的会话记录位于 `config/claude/<实例>/projects/`，容器可以写入，不能作为可信的审计依据。
-- **Mac 传输**：由维护者在 OrbStack / Docker Desktop 上实测后，再确定是否需要 §6 的 TCP 备选方案。
+- **Docker Desktop on Mac**：实测 §6.2 的方案。
 
 ## 决定记录
 
@@ -192,7 +221,7 @@ Mac 上如果 socket 无法穿过文件共享，备选方案是：
 | 宿主依赖 | `python3` 和 `sshd` 程序 |
 | 端口转发 | 桥专用的 sshd 中开启 `AllowTcpForwarding yes` |
 | 交互式 | 支持（人在终端里使用）；Claude 自己执行时用一次性命令 |
-| Mac | 待维护者实测 |
+| Mac | 回环 TCP，宿主是网关唯一的直连特例（方案 A，§6.2）；OrbStack 的前提条件已由维护者实测 |
 
 ## 9. 实现阶段与测试
 

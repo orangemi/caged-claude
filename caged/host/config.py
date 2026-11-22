@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import zlib
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -35,6 +36,9 @@ DEFAULTS = {
     'host_bridge': True,
     'host_bridge_user': None,  # None: the user running ./cage (CAGED_HOST_USER)
     'host_bridge_sshd': None,  # None: found on the host's PATH
+    'host_bridge_transport': 'auto',  # unix on Linux/WSL, tcp on macOS (no socket crosses its VM)
+    'host_bridge_port': None,  # tcp only; None: derived from the instance name
+    'host_bridge_address': None,  # tcp only; None: host.docker.internal, resolved at start
     'browser_probe_port': 19981,
     'claude_probe_port': 19982,
     'monitor_tick': 5,
@@ -69,6 +73,9 @@ FIELDS = {
     'host_bridge': ('host_bridge.enabled', 'HOST_BRIDGE'),
     'host_bridge_user': ('host_bridge.user', 'HOST_BRIDGE_USER'),
     'host_bridge_sshd': ('host_bridge.sshd', 'HOST_BRIDGE_SSHD'),
+    'host_bridge_transport': ('host_bridge.transport', 'HOST_BRIDGE_TRANSPORT'),
+    'host_bridge_port': ('host_bridge.port', 'HOST_BRIDGE_PORT'),
+    'host_bridge_address': ('host_bridge.address', 'HOST_BRIDGE_ADDRESS'),
     'browser_probe_port': ('ports.browser_probe', 'BROWSER_PROBE_PORT'),
     'claude_probe_port': ('ports.claude_probe', 'CLAUDE_PROBE_PORT'),
     'monitor_tick': ('monitor.tick', 'MONITOR_TICK'),
@@ -273,6 +280,21 @@ def resolve(argv=None, environ=None):
     if args.host_bridge_sshd is not None and (not isinstance(args.host_bridge_sshd, str)
                                               or not args.host_bridge_sshd.startswith('/')):
         raise ConfigError('host_bridge.sshd must be an absolute path')
+    transport = args.host_bridge_transport
+    if transport not in ('auto', 'unix', 'tcp'):
+        raise ConfigError('host_bridge.transport must be auto, unix or tcp')
+    if transport == 'auto':
+        # A Unix socket cannot cross between macOS and Docker's Linux VM.
+        transport = 'tcp' if env.get('CAGED_HOST_OS', os.uname().sysname) == 'Darwin' else 'unix'
+    args.host_bridge_transport = transport
+    if args.host_bridge_port is None:
+        args.host_bridge_port = 41000 + zlib.crc32(args.instance.encode()) % 1000
+    args.host_bridge_port = integer(args.host_bridge_port, 'host_bridge.port', 1024, 65535)
+    if args.host_bridge_address is not None:
+        try:
+            args.host_bridge_address = str(ipaddress.IPv4Address(str(args.host_bridge_address)))
+        except ValueError:
+            raise ConfigError('host_bridge.address must be an IPv4 address') from None
     if not isinstance(args.state_dir, (str, Path)) or not str(args.state_dir).strip():
         raise ConfigError('state.dir must be a directory path')
     folder = Path(args.state_dir).expanduser()
@@ -298,4 +320,8 @@ def runtime_policy(args):
              'languages', 'controller_port', 'mixed_port', 'debug_port', 'browser_probe_port', 'claude_probe_port',
              'monitor_tick', 'monitor_interval', 'monitor_lease', 'monitor_probe_timeout',
              'monitor_retry_initial', 'monitor_retry_max', 'puid', 'pgid')
-    return {name: getattr(args, name) for name in names}
+    result = {name: getattr(args, name) for name in names}
+    # [address, port] of the host bridge's TCP listener, the gateway's only
+    # direct (non-node) destination; None unless the tcp transport is active.
+    result['host_bridge_tcp'] = getattr(args, 'host_bridge_tcp', None)
+    return result

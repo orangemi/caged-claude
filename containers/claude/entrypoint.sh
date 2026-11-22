@@ -39,7 +39,7 @@ Host host caged-host
     IdentitiesOnly yes
     UserKnownHostsFile /run/caged-host/known_hosts
     StrictHostKeyChecking yes
-    ProxyCommand /usr/bin/python3 /caged-runtime/caged/runtime/hostpipe.py /run/caged-host/host.sock
+    ProxyCommand /usr/bin/python3 /caged-runtime/caged/runtime/hostpipe.py ${CAGED_HOST_BRIDGE:-/run/caged-host/host.sock}
 EOF
     chmod 644 "$client.tmp"
     mv "$client.tmp" "$client"

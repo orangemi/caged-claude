@@ -13,11 +13,30 @@ def command(args, *, data=None):
     return result.stdout
 
 
-def firewall_rules(address, port):
+def host_bridge_rules(host):
+    """The single direct destination besides the node: the host bridge's TCP listener.
+
+    Used where a Unix socket cannot reach the host (macOS). It sits before the
+    permit gate on purpose: the bridge reaches the host, not the internet, so
+    pausing outbound traffic must not cut `ssh host`."""
+    if not host:
+        return '', ''
+    bridge_address = str(ipaddress.IPv4Address(host[0]))
+    bridge_port = int(host[1])
+    if not 1 <= bridge_port <= 65535:
+        raise ValueError('Invalid host bridge port')
+    incoming = (f'-A INPUT -i eth0 -s {bridge_address}/32 -p tcp --sport {bridge_port} '
+                f'-m conntrack --ctstate ESTABLISHED -j ACCEPT\n')
+    outgoing = f'-A OUTPUT -o eth0 -d {bridge_address}/32 -p tcp --dport {bridge_port} -j ACCEPT\n'
+    return incoming, outgoing
+
+
+def firewall_rules(address, port, host=None):
     address = str(ipaddress.IPv4Address(address))
     port = int(port)
     if not 1 <= port <= 65535:
         raise ValueError('Invalid upstream port')
+    host_in, host_out = host_bridge_rules(host)
     return f'''*filter
 :INPUT DROP [0:0]
 :FORWARD DROP [0:0]
@@ -31,7 +50,7 @@ def firewall_rules(address, port):
 -A CAGED_GATE -m set --match-set {LEASE} src -j RETURN
 -A CAGED_GATE -j DROP
 -A INPUT -i eth0 -s {address}/32 -p tcp --sport {port} -m connmark --mark {CORE_MARK} -m conntrack --ctdir REPLY -j ACCEPT
--A INPUT -p tcp --dport {BROWSER_HTTPS_PORT} -j ACCEPT
+{host_in}-A INPUT -p tcp --dport {BROWSER_HTTPS_PORT} -j ACCEPT
 -A INPUT -i lo -p udp -m multiport --ports 53 -j CAGED_GATE
 -A INPUT -i lo -p tcp -m multiport --ports 53 -j CAGED_GATE
 -A INPUT -i lo -j ACCEPT
@@ -41,7 +60,7 @@ def firewall_rules(address, port):
 -A OUTPUT -m mark --mark {PROBE_MARK} -j CONNMARK --save-mark
 -A OUTPUT -o eth0 -d {address}/32 -p tcp --dport {port} -m mark --mark {CORE_MARK} -j CONNMARK --save-mark
 -A OUTPUT -o eth0 -d {address}/32 -p tcp --dport {port} -m mark --mark {CORE_MARK} -j ACCEPT
--A OUTPUT -p tcp --sport {BROWSER_HTTPS_PORT} -m conntrack --ctstate ESTABLISHED -j ACCEPT
+{host_out}-A OUTPUT -p tcp --sport {BROWSER_HTTPS_PORT} -m conntrack --ctstate ESTABLISHED -j ACCEPT
 -A OUTPUT -o lo -p udp -m multiport --ports 53 -j CAGED_GATE
 -A OUTPUT -o lo -p tcp -m multiport --ports 53 -j CAGED_GATE
 -A OUTPUT -o lo -j ACCEPT

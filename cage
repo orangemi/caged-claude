@@ -147,7 +147,7 @@ launch() {
     set -- "$@" run --rm -i --init \
         --mount "type=bind,src=$sock,dst=/var/run/docker.sock" \
         --mount "type=bind,src=$root,dst=$root" \
-        -e HOME -e TERM -e "CAGED_HOST_UID=$(id -u)" -e "CAGED_HOST_GID=$(id -g)" -e CAGED_HOST_USER \
+        -e HOME -e TERM -e "CAGED_HOST_UID=$(id -u)" -e "CAGED_HOST_GID=$(id -g)" -e CAGED_HOST_USER -e CAGED_HOST_OS \
         -w "$PWD"
     # Settings, node files and workspaces are validated inside the launcher,
     # so it sees them at their host paths, read-only.
@@ -210,6 +210,8 @@ esac
 
 runner=exec
 export CAGED_HOST_USER="${CAGED_HOST_USER:-$(id -un)}"
+# The launcher container always sees Linux; the bridge transport depends on the real host.
+export CAGED_HOST_OS="${CAGED_HOST_OS:-$(uname -s)}"
 # Inside the launcher image (CAGED_LAUNCHER=1) the same script runs natively.
 if [ "${CAGED_LAUNCHER:-}" = 1 ]; then
     native "$@"

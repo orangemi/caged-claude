@@ -217,7 +217,8 @@ ssh -J host aws-box               # 由宿主连接只有宿主能到达的机�
 ```
 
 - **默认开启**，`host_bridge.enabled: false` 关闭。**开启时，笼子里的任何进程（包括 root 和 Claude）都能以你的身份在宿主上执行命令、读取你能读取的文件。**
-- 通道是一个只读挂载的 Unix socket，`state/<实例>/bridge/host.sock`，宿主那一端每个连接执行一次项目专用、非 root 的 `sshd -i`。不开放网络端口，不修改网关防火墙，也不碰系统的 SSH 服务。
+- Linux/WSL 上，通道是一个只读挂载的 Unix socket，`state/<实例>/bridge/host.sock`，宿主那一端每个连接执行一次项目专用、非 root 的 `sshd -i`。不开放网络端口，不修改网关防火墙，也不碰系统的 SSH 服务。
+- Mac 上 socket 无法跨越 Docker 的虚拟机，所以改用回环 TCP：监听 Mac 的 `127.0.0.1:<端口>`；网关只为 `host.docker.internal` 的这一个端口开放直连，不经过代理节点。这是除节点之外唯一的直连目标。
 - 宿主上的命令使用**宿主自己的**网络、代理和凭证，与笼子的代理出口无关。
 - 宿主需要 `python3` 和 `sshd` 程序（不需要开启 SSH 服务）。缺少时 `./cage up` 只打印警告，笼子照常启动；`./cage status` 显示 `host bridge:` 的状态。
 - 旧环境需要先安装一次客户端：`./cage shell -- sh -c 'sudo apt-get update && sudo apt-get install -y openssh-client rsync'`。

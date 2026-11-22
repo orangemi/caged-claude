@@ -24,6 +24,7 @@ class Session:
         self.args = args
         self.instance = Instance(args.instance)
         self.detached = detached
+        args.host_bridge_tcp = hostbridge.tcp_endpoint(args)
         self.policy = runtime_policy(args)
         self.gateway_process = None
         self.check_process = None
@@ -215,7 +216,8 @@ class Session:
                 '--network', 'container:' + self.network_container_id, '--cap-drop', 'NET_RAW',
                 *self.common_environment(), *self.workspace_arguments(), *self.claude_state_arguments(),
                 '-e', 'CAGED_SUDO=' + ('1' if self.args.claude_sudo else '0'),
-                *(['-e', 'CAGED_HOST_USER=' + self.args.host_bridge_user] if self.args.host_bridge else []),
+                *(['-e', 'CAGED_HOST_USER=' + self.args.host_bridge_user,
+                   '-e', 'CAGED_HOST_BRIDGE=' + hostbridge.target(self.args)] if self.args.host_bridge else []),
                 images.IMAGES['claude']]
 
     def prepare_claude_state(self):

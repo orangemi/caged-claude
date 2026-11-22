@@ -1,7 +1,11 @@
-"""ssh ProxyCommand: relay stdin/stdout to the host bridge's Unix socket.
+"""ssh ProxyCommand: relay stdin/stdout to the host bridge.
 
 Lives in the read-only /caged-runtime mount, so the container needs no
-socat or nc. Usage: python3 hostpipe.py /run/caged-host/host.sock
+socat or nc. The target is the Unix socket (Linux/WSL) or, where no socket
+crosses into Docker's VM (macOS), tcp:ADDRESS:PORT.
+
+  python3 hostpipe.py /run/caged-host/host.sock
+  python3 hostpipe.py tcp:0.250.250.254:41234
 """
 import os
 import selectors
@@ -10,11 +14,16 @@ import sys
 
 
 def relay(path, stdin=0, stdout=1):
-    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        connection.connect(path)
+        if path.startswith('tcp:'):
+            address, port = path[4:].rsplit(':', 1)
+            connection = socket.create_connection((address, int(port)), timeout=10)
+            connection.settimeout(None)
+        else:
+            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            connection.connect(path)
     except OSError as error:
-        print(f'caged host bridge: cannot connect to {path}: {error.strerror}. '
+        print(f'caged host bridge: cannot connect to {path}: {error.strerror or error}. '
               'Is the bridge running? Check ./cage status on the host.', file=sys.stderr)
         return 255
     selector = selectors.DefaultSelector()
