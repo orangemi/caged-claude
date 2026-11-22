@@ -51,7 +51,10 @@ def build(role='network', force=False):
     expected = source_hash(role)
     actual = engine.docker('image', 'inspect', image, '--format', '{{index .Config.Labels "io.caged-claude.source"}}', check=False)
     if force or actual.returncode or actual.stdout.strip() != expected:
-        result = subprocess.run(['docker', 'build', '--label', 'io.caged-claude.source=' + expected,
+        # --pull re-resolves base images for the daemon's platform instead of
+        # trusting a local tag, which may hold another architecture's image.
+        # Builds only run when the inputs change, so the extra lookup is rare.
+        result = subprocess.run(['docker', 'build', '--pull', '--label', 'io.caged-claude.source=' + expected,
                                  '-t', image, '-f', str(ROOT / 'containers' / role / 'Dockerfile'), str(ROOT)])
         if result.returncode:
             raise CageError(role + ' image build failed')
