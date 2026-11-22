@@ -36,8 +36,7 @@ section() { say ''; say "=== $*"; }
 note() { printf '%-58s %s\n' "$1" "$2" >>"$summary"; }
 # run LABEL COMMAND...: record the output and exit code in the report.
 run() {
-    label=$1; shift
-    say "--- $label"
+    say "--- $1"; shift
     "$@" >"$out" 2>&1
     rc=$?
     tee -a "$report" <"$out"
