@@ -20,7 +20,7 @@ Claude 在笼子里写代码，但有些事必须回到宿主机上做：
 
    例如宿主已经连在公司的 AWS 内网（VPN 或专线）里，而笼子没有这个网络。通过桥回到宿主后，`ssh -J host aws-box` 由宿主直接连到 AWS 内网，不经过代理节点，也不需要给笼子开任何内网口子。
 3. **用成熟的协议，不自己造。** 交互式 shell、一次性命令、文件传输、端口转发都要支持，所以在 socket 上跑标准 SSH 协议。
-4. **默认关闭，显式开启。** 开启后，笼子里的任何进程（包括 root，以及被提示注入的 Claude）都能以你的身份在宿主上执行命令。这正是这个功能的用途，但必须是明确的选择，并且在 `./cage status` 中可见。
+4. **默认开启，可以关闭。** 这是常用功能，所以默认开启；`host_bridge.enabled: false` 时完全不启动，不挂载 socket，也不生成密钥。开启时，笼子里的任何进程（包括 root，以及被提示注入的 Claude）都能以你的身份在宿主上执行命令。这正是这个功能的用途，README 中会醒目说明，并在 `./cage status` 中显示。
 
 ## 3. 架构
 
@@ -121,20 +121,27 @@ PidFile none
 
 `ssh -J host cloud-server` 时，到云服务器的那一跳由宿主发起，使用的是宿主的网络和宿主的 `~/.ssh` 配置，与笼子的代理出口无关。
 
+### 4.1 交互式与一次性命令
+
+- **人在终端里使用：完全支持交互。** 在 `./cage shell` 里执行 `ssh host`，得到宿主上一个完整的交互式 shell：PTY、颜色、窗口大小变化，以及 `vim`、`htop`，都可以正常使用；也能在里面继续 `ssh` 到云服务器。单个交互程序可以用 `ssh -t host htop`。
+- **Claude 自己执行：使用一次性命令。** Claude Code 执行命令时没有终端，无法应答密码提示，也无法操作全屏程序。所以 Claude 应该使用 `ssh host '<命令>'`、`scp`、`rsync` 这类非交互形式。这是 Claude Code 执行命令方式的限制，与桥无关。宿主上的命令如果需要输入密码，应该事先在宿主上配置好，比如使用 ssh-agent 或免密码 sudo 规则。
+
 ## 5. 配置与命令
 
 ```yaml
 host_bridge:
-  enabled: false          # 默认关闭
+  enabled: true           # 默认开启；false 时完全不启动
   # user: alice           # 宿主用户名，默认取运行 ./cage 的用户
   # sshd: /usr/sbin/sshd  # 默认自动查找
 ```
+
+宿主依赖：开启时需要宿主上有 `python3`（只用标准库）和 `sshd` 程序，不需要开启系统的 SSH 服务。因为桥默认开启，缺少依赖时 `./cage up` **不会失败**：会打印警告，例如 `host bridge unavailable: sshd not found; install openssh-server or set host_bridge.enabled: false`，然后照常启动笼子。`./cage status` 会显示 `host bridge: unavailable (<原因>)`。
 
 | 命令 | 行为 |
 | --- | --- |
 | `./cage up` | 开启时：首次生成 host key 和客户端密钥；启动宿主监听进程；挂载 `/run/caged-host` |
 | `./cage down` | 停止监听进程，删除 socket |
-| `./cage status` | 显示 `host bridge: enabled (listening)` / `stopped` / `disabled` |
+| `./cage status` | 显示 `host bridge: listening` / `stopped` / `unavailable (<原因>)` / `disabled` |
 | `./cage bridge rotate` | 重新生成客户端密钥，替换 `authorized_keys`（怀疑密钥泄露时使用） |
 
 ## 6. 宿主平台
@@ -155,8 +162,8 @@ Mac 上如果 socket 无法穿过文件共享，备选方案是：
 
 ## 7. 安全边界（审批与审计除外）
 
-1. **开启即授权。** 笼子里任何能读到客户端私钥、能连上 socket 的进程，都能以你的身份在宿主上执行任意命令、读取你能读取的任何文件。这就是这个功能的用途。是否需要审批、如何审计，留到 §8 统一设计。
-2. **端口转发会让笼子访问宿主的网络。** `ssh -L` 能访问宿主能访问的任何地址，这符合原则 2（宿主命令按宿主的环境来）。如果不需要，可以改成 `AllowTcpForwarding no`。
+1. **开启即授权，而且默认开启。** 笼子里任何能读到客户端私钥、能连上 socket 的进程，都能以你的身份在宿主上执行任意命令、读取你能读取的任何文件。这就是这个功能的用途。不需要时，用 `host_bridge.enabled: false` 关闭。是否需要审批、如何审计，留到 §8 统一设计。
+2. **端口转发会让笼子访问宿主的网络。** `ssh -L` 能访问宿主能访问的任何地址，这符合原则 2（宿主命令按宿主的环境来）。这个设置只作用于桥专用的 sshd，系统的 SSH 服务不受影响。已确认保持开启。
 3. **容器无法篡改通道。** socket 所在目录只读挂载；host key 固定；sshd 配置、`authorized_keys`、日志都在 `config/` 和 `state/<实例>/bridge/` 中，容器无法访问。
 4. **系统 SSH 服务保持不变。** 不开放任何网络端口，不修改宿主上已有的 sshd 配置和 `~/.ssh/authorized_keys`。
 5. **密钥可以留在宿主上。** 推荐用 `ssh -J host …` 或在宿主 shell 里使用宿主的密钥。这样宿主上的私钥不必复制进容器，被复制进容器的只有桥专用的那把客户端密钥。
@@ -165,7 +172,17 @@ Mac 上如果 socket 无法穿过文件共享，备选方案是：
 
 - **审批**：哪些命令需要确认、在哪里确认、如何防止伪造确认界面。SSH 提供了现成的扩展点（`authorized_keys` 的 `command=`、`restrict`，以及 ForceCommand 包装器）。
 - **审计**：桥的会话日志，与笼子内命令的记录统一。Claude Code 自己的会话记录位于 `config/claude/<实例>/projects/`，容器可以写入，不能作为可信的审计依据。
-- **Mac 传输**：实测后确定是否需要 §6 的 TCP 备选方案。
+- **Mac 传输**：由维护者在 OrbStack / Docker Desktop 上实测后，再确定是否需要 §6 的 TCP 备选方案。
+
+## 决定记录
+
+| 问题 | 结论 |
+| --- | --- |
+| 默认开关 | 默认开启，`host_bridge.enabled: false` 关闭；缺少依赖时警告并继续启动笼子 |
+| 宿主依赖 | `python3` 和 `sshd` 程序 |
+| 端口转发 | 桥专用的 sshd 中开启 `AllowTcpForwarding yes` |
+| 交互式 | 支持（人在终端里使用）；Claude 自己执行时用一次性命令 |
+| Mac | 待维护者实测 |
 
 ## 9. 实现阶段与测试
 
