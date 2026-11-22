@@ -2,7 +2,7 @@
 
 把 Claude Code 关进 Docker 运行，并把它的网络锁死：所有出站流量只能经过你指定的一个代理节点，节点不可用或检查不通过时直接断网，不会回退直连。
 
-- **隔离运行**：Claude Code 跑在独立容器里，只能看到显式挂载的 workspace 和自己的授权目录（`config/.claude`），看不到宿主的其他文件、Keychain 或 Docker socket。
+- **隔离运行**：Claude Code 跑在独立容器里，只能看到显式挂载的 workspace、自己的授权目录和环境状态目录，看不到宿主的其他文件、Keychain 或 Docker socket。
 - **网络受限**：Claude 不拥有自己的网络，只共享 mihomo 网关容器的网络栈。网关默认拒绝一切流量，只放行到选定节点的连接；DNS 也经节点解析，IPv6、私网、元数据地址和公共 DNS 一律阻断。
 - **持续检查，失败即断网**：网关持续核对代理、防火墙、DNS 和出口国家，每次通过只发放一段有限期的内核放行许可（默认 90 秒），检查失败或超时，许可到期自动断网。
 - **配套浏览器**：同一网络里还有一个 Chromium，通过 `https://localhost:3002` 访问，用于登录授权或手动查看网页，出口和 Claude 完全一致。
@@ -64,7 +64,7 @@ cd ~/Projects/caged-claude
 ./cage shell --instance my-instance   # 选择其他实例
 ```
 
-Shell 复用现有网络与挂载，并校验容器所属项目和网关 ID。**当前 `./cage down` 仍会删除容器可写层；安装软件和完整开发环境的持久化方案见 [有状态服务设计](docs/stateful-service.md)。**
+Shell 复用现有网络与挂载，并校验容器所属项目和网关 ID。**Claude 容器是一台有状态的 Linux**：装的软件、改的配置、HOME 里的文件都实时写在宿主的 `state/<实例>/`，`./cage down`、容器被杀、宿主重启甚至重装 Docker 之后，`./cage up` 都会恢复原样。细节见下方 [有状态环境](#有状态环境) 和 [设计文档](docs/stateful-service.md)。
 
 ## 配置文件
 
@@ -139,6 +139,8 @@ config/mihomo.yaml   # mihomo 节点和凭证
 | `instance` | `CAGED_CLAUDE_INSTANCE` | `--instance` |
 | `workspace` | `CAGED_CLAUDE_WORKSPACE` | `--workspace`，可重复 |
 | `claude.config_dir` | `CAGED_CLAUDE_CLAUDE_CONFIG_DIR` | `--claude-config-dir` |
+| `claude.sudo` | `CAGED_CLAUDE_CLAUDE_SUDO` | `--claude-sudo` |
+| `state.dir` | `CAGED_CLAUDE_STATE_DIR` | `--state-dir` |
 | `ports.browser_probe` / `ports.claude_probe` | `CAGED_CLAUDE_BROWSER_PROBE_PORT` / `CAGED_CLAUDE_CLAUDE_PROBE_PORT` | `--browser-probe-port` / `--claude-probe-port` |
 | `monitor.tick` / `monitor.interval` | `CAGED_CLAUDE_MONITOR_TICK` / `CAGED_CLAUDE_MONITOR_INTERVAL` | `--monitor-tick` / `--monitor-interval` |
 | `monitor.lease` / `monitor.probe_timeout` | `CAGED_CLAUDE_MONITOR_LEASE` / `CAGED_CLAUDE_MONITOR_PROBE_TIMEOUT` | `--monitor-lease` / `--monitor-probe-timeout` |
@@ -191,16 +193,32 @@ workspace:
 
 `CAGED_CLAUDE_WORKSPACE` 可以是单个路径或 JSON 路径数组，设为 `[]` 可清除配置中的列表；CLI 可重复 `--workspace /path`，覆盖整个列表。不会自动共享整个 Mac 主目录或 Docker socket，也不会修改 workspace 的文件属主。挂载后，其中的文件按普通权限可被两个应用读取和修改，包括目录中的隐藏文件。
 
-Claude 的持久化映射独立于 workspace：
+Claude 的登录凭证单独保存，不和环境状态放在一起：
 
 ```text
-宿主：<项目>/config/.claude  →  Claude 容器：/config/.claude（即 ~/.claude）
-CLAUDE_CONFIG_DIR=/config/.claude
+宿主：<项目>/config/claude/<实例>  →  Claude 容器：/home/claude/.claude（即 ~/.claude）
+CLAUDE_CONFIG_DIR=/home/claude/.claude
 ```
 
-容器中的 HOME 与浏览器一样为 `/config`。显式设置 `CLAUDE_CONFIG_DIR` 使 `.credentials.json`、`settings.json`、会话/记忆以及原本在 HOME 外层的 `.claude.json` 一并保存在绑定目录中。默认不会复制 Mac 的 `.claude` 或 Keychain；首次通过 `./cage claude` 登录。容器中无法自动打开本机浏览器时，按 CLI 提示在 Mac 打开登录 URL 并粘贴返回代码。
+显式设置 `CLAUDE_CONFIG_DIR` 使 `.credentials.json`、`settings.json`、会话/记忆以及原本在 HOME 外层的 `.claude.json` 一并保存在这个目录中。默认不会复制宿主的 `.claude` 或 Keychain；首次通过 `./cage claude` 登录。容器中无法自动打开本机浏览器时，按 CLI 提示在宿主打开登录 URL 并粘贴返回代码。旧版本的 `config/.claude` 会在默认实例首次启动时移动到 `config/claude/caged-claude`，登录状态不变。
 
-`claude.config_dir` 是可选项，默认上述项目目录；如需隔离测试，可指定本项目 `config/` 下的其他子目录。状态目录权限为 `700`，授权文件由 Claude 管理。`./cage down`、镜像重建和容器重建不会删除宿主目录；有效登录令牌可继续使用，令牌本身仍有有效期。`config/` 整体已被 Git 忽略，也被排除在 Claude 镜像的构建上下文之外。
+`claude.config_dir` 是可选项，只能指向本项目 `config/` 下的子目录。目录权限为 `700`，授权文件由 Claude 管理。删除或重建 `state/` 都不会动它；有效登录令牌可继续使用，令牌本身仍有有效期。`config/` 整体已被 Git 忽略，也被排除在镜像构建上下文之外。
+
+## 有状态环境
+
+Claude 容器里所有会被修改的目录都实时保存在宿主 `state/<实例>/`（`state.dir` 可改到其他磁盘），容器本身随时可以丢弃：
+
+| 容器内 | 宿主 `state/<实例>/` | 例如 |
+| --- | --- | --- |
+| `/etc`、`/usr`、`/var`、`/opt`、`/srv`、`/root` | `system/` | `apt install`、`sudo npm i -g`、`/usr/local/bin` 里的工具、系统配置 |
+| `/home/claude` | `home/` | `pip --user`、nvm/mise、下载的文件、`~/.cache` |
+| 浏览器 `/config` | `browser/` | Chromium 的登录、Cookie、历史 |
+
+- **首次启动**从 Debian 13 镜像复制一份系统到 `state/<实例>/`（约 1 GB），之后不再从镜像读取；修改 Dockerfile 只影响新实例。升级像真实机器一样在容器里做：`sudo apt upgrade`、`sudo npm i -g @anthropic-ai/claude-code@<版本>`。
+- **默认有免密码 sudo**（`claude.sudo: false` 可关闭）。网络边界由网关保证，与容器内 root 无关。
+- **不保留**：`/tmp`、`/run` 与真实 Linux 重启一样会清空。
+- **保护**：`state/<实例>/.caged-state` 标记把目录和实例绑定；磁盘未接上、路径写错或目录不属于这个实例时拒绝启动，不会新建空环境覆盖。首次初始化前会检测文件系统能否保留属主、setuid 和链接，**只支持 Linux 文件系统（Linux/WSL 的 ext4 等），不支持 macOS 文件共享**。
+- `system/` 里有 root 属主的文件；需要手动删除整个实例时用 `sudo rm -rf state/<实例>`，并同时删除 `config/instances/<实例>.json`。
 
 ## 出口验证
 
@@ -243,7 +261,7 @@ CLAUDE_CONFIG_DIR=/config/.claude
 
 ## 数据生命周期
 
-浏览器自己的配置、登录状态和缓存仍不持久化，容器删除时清理。显式挂载的 workspace 与 Claude 授权目录是保留在宿主的两类数据，`--rm` 不删除它们。
+容器都以 `--rm` 运行，删除容器不会丢数据：Claude 的系统与 HOME、浏览器资料保存在 `state/<实例>/`，Claude 授权在 `config/claude/<实例>/`，workspace 就是宿主原目录。
 
 项目的 `config/mihomo.yaml` 保存配置快照及其中的节点凭证。启动器读取选定节点后，通过标准输入传给网络容器，不把凭证放进容器环境变量或镜像。生成的运行时配置、控制密钥和核心日志只保存在容器内 `/run/caged` 的 tmpfs，网关退出后销毁。项目配置快照、Docker 镜像和构建缓存保留。
 

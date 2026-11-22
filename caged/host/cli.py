@@ -1,5 +1,6 @@
 """Launcher actions behind ./cage, without importing container services."""
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -7,7 +8,7 @@ from . import docker as engine, images, proxy
 from .config import ConfigError, resolve
 from .errors import CageError
 from .instance import Instance
-from .paths import ROOT, LABEL, LEGACY_LABEL
+from .paths import ROOT, LABEL, LEGACY_LABEL, IN_LAUNCHER
 from .session import Session
 
 
@@ -54,14 +55,25 @@ def main(args):
         return
     if args.action == 'test':
         images.build('network')
+        environment = dict(os.environ)
+        if IN_LAUNCHER:
+            # Tests bind-mount their temporary directories into containers; the
+            # daemon resolves those paths on the host, so they must live in a
+            # directory the launcher shares with it rather than its own /tmp.
+            shared = ROOT / 'state' / '.tmp'
+            shared.mkdir(parents=True, exist_ok=True, mode=0o700)
+            environment['TMPDIR'] = str(shared)
         result = subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', str(ROOT / 'tests'),
-                                 '-t', str(ROOT), '-p', 'test_*.py', '-v'])
+                                 '-t', str(ROOT), '-p', 'test_*.py', '-v'], env=environment)
         if result.returncode:
             raise CageError('Local network-boundary test failed')
         return
     if args.action == 'stop':
         for name in instance.shutdown_order:
             engine.stop_managed(name)
+        # The environment lives in state/<instance>/ on the host; flush it now
+        # rather than whenever the kernel gets to it.
+        os.sync()
         return
     if args.action == 'status':
         warn_legacy()

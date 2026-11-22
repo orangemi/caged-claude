@@ -300,7 +300,15 @@ class Settings(unittest.TestCase):
         browser,claude=session.browser_command(),session.claude_command()
         mount=f'type=bind,src={second},dst={second}'
         self.assertIn(mount,browser);self.assertIn(mount,claude)
-        self.assertIn(f'type=bind,src={args.claude_config_dir},dst=/config/.claude',claude)
+        self.assertIn(f'type=bind,src={args.claude_config_dir},dst=/home/claude/.claude',claude)
+        self.assertIn(f'type=bind,src={session.state.system / "usr"},dst=/usr',claude)
+        self.assertIn(f'type=bind,src={ROOT / "caged"},dst=/caged-runtime/caged,readonly',claude)
+        self.assertIn(f'type=bind,src={session.state.browser},dst=/config',browser)
+        self.assertIn('CAGED_SUDO=1',claude)
+        self.assertEqual(set(session.expected_mounts('claude')),
+                         {str(second),'/etc','/usr','/var','/opt','/srv','/root','/home/claude','/home/claude/.claude',
+                          '/caged-runtime/caged','/caged-runtime/entrypoint.sh'})
+        self.assertEqual(set(session.expected_mounts('browser')),{str(second),'/config'})
         for value in session.common_environment():
             self.assertIn(value,browser);self.assertIn(value,claude)
 
@@ -308,9 +316,35 @@ class Settings(unittest.TestCase):
         with self.assertRaises(ConfigError):self.parse('--workspace','/does-not-exist')
         with self.assertRaises(ConfigError):self.parse('--workspace','/')
         with self.assertRaises(ConfigError):self.parse('--claude-config-dir',str(Path.home()))
+        for protected in ('/var/lib','/opt','/srv','/root','/home/claude'):
+            with self.assertRaises(ConfigError,msg=protected):
+                self.parse('--workspace',protected)
         args=self.parse()
         self.assertEqual(args.workspace,[])
-        self.assertEqual(args.claude_config_dir,ROOT/'config/.claude')
+        self.assertEqual(args.claude_config_dir,ROOT/'config'/'claude'/'caged-claude')
+        self.assertEqual(self.parse('--instance','other').claude_config_dir,ROOT/'config'/'claude'/'other')
+        self.assertEqual(args.state_dir,ROOT/'state')
+
+    def test_state_directory_and_sudo_follow_the_usual_precedence(self):
+        args=self.parse()
+        self.assertIs(args.claude_sudo,True)
+        self.data['claude']={'sudo':False}
+        self.data['state']={'dir':'environments'}
+        self.write()
+        args=self.parse()
+        self.assertIs(args.claude_sudo,False)
+        self.assertEqual(args.state_dir,self.folder/'environments')
+        self.assertIs(self.parse(env={'CAGED_CLAUDE_CLAUDE_SUDO':'yes'}).claude_sudo,True)
+        self.assertIs(self.parse('--claude-sudo','true').claude_sudo,True)
+        self.assertEqual(self.parse('--state-dir',str(self.folder/'cli')).state_dir,self.folder/'cli')
+        session=Session(self.parse())
+        session.network_container_id,session.network_session_id='fixture-id','fixture-session'
+        self.assertIn('CAGED_SUDO=0',session.claude_command())
+        for value in ('maybe','2'):
+            with self.assertRaises(ConfigError):
+                self.parse('--claude-sudo',value)
+        with self.assertRaises(ConfigError):
+            self.parse('--state-dir','/tmp/a:b')
 
     def test_claude_entry_uses_actual_container_identity_and_forwards_cli_flags(self):
         from caged.host.claude import command

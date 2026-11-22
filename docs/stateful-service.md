@@ -1,6 +1,6 @@
 # 有状态 Linux 环境设计
 
-> 状态：设计方案，尚未实现。当前代码中 `./cage up` / `./cage down` 仍使用 `--rm` 临时容器，`./cage down` 会丢弃容器内的系统修改；只有 `config/.claude` 和 workspace 保留。本文替代此前“保留容器可写层 + 具名卷”的方案。
+> 状态：阶段 1（§9）已实现，阶段 2 的维护命令（reset、archive、snapshot、restore、destroy、upgrade）尚未实现。本文替代此前“保留容器可写层 + 具名卷”的方案。
 
 ## 1. 目标
 
@@ -74,7 +74,7 @@ state/<实例>/
 │   ├── opt/   → /opt
 │   ├── srv/   → /srv
 │   └── root/  → /root
-├── home/      → /home    # 用户层：claude-user 的 HOME 是 /home/claude
+├── home/      → /home/claude   # 用户层：claude-user 的 HOME
 ├── browser/   → 浏览器容器的 /config   # Chromium 资料：登录、Cookie、历史，700 权限
 ├── archive/<时间>/        # reset 移入的旧 system/（或 home/、browser/），附 manifest.json
 └── snapshots/<时间>.tar.zst
@@ -83,6 +83,8 @@ state/<实例>/
 不持久化的目录和真实 Linux 重启后的表现一致：`/proc`、`/sys`、`/dev`、`/run`、`/tmp` 由 Docker 或 tmpfs 提供。Docker 管理的 `/etc/hosts`、`/etc/hostname`、`/etc/resolv.conf` 会叠加在 `/etc` 的挂载之上，所以 DNS 仍由网关控制。
 
 `system`、`home`、`browser` 分开存放，可以分别重置和备份。
+
+只持久化 `/home/claude`，不持久化整个 `/home`。原因是 Linux 宿主上的 workspace 通常在 `/home/<用户>/…`，并按原路径挂载进容器：如果 `/home` 整体是持久化挂载，Docker 会在 `state/<实例>/home` 里为这些 workspace 建出 root 属主的空挂载点目录。同理，workspace 也不能位于 `/var`、`/opt`、`/srv`、`/root` 之下，配置校验会拒绝。
 
 Claude 的登录凭证**单独存放**，不放在 `state/` 里：
 
@@ -111,7 +113,7 @@ config/claude/<实例>/  → /home/claude/.claude   （叠加在 home 的挂载�
 
 ```text
 --mount type=bind,src=state/<实例>/system/etc,dst=/etc     （usr、var、opt、srv、root 同理）
---mount type=bind,src=state/<实例>/home,dst=/home
+--mount type=bind,src=state/<实例>/home,dst=/home/claude
 --mount type=bind,src=config/claude/<实例>,dst=/home/claude/.claude
 --mount type=bind,src=<项目>/caged,dst=/caged-runtime/caged,readonly
 --mount type=bind,src=<项目>/containers/claude/entrypoint.sh,dst=/caged-runtime/entrypoint,readonly
