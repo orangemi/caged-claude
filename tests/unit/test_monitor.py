@@ -108,7 +108,7 @@ class MonitorTransitions(unittest.TestCase):
         self.assertEqual(self.model.attempts, 0)
 
     def test_monitor_settings_precedence_and_timing_validation(self):
-        args = resolve(['--monitor-lease', '120'], environ={'CAGED_BROWSER_MONITOR_LEASE': '100'})
+        args = resolve(['--monitor-lease', '120'], environ={'CAGED_CLAUDE_MONITOR_LEASE': '100'})
         self.assertEqual(args.monitor_lease, 120)
         with self.assertRaises(ConfigError):
             resolve(['--monitor-lease', '10'], environ={})

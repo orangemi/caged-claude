@@ -1,4 +1,4 @@
-"""Dispatch the four host entry points without importing container services."""
+"""Launcher actions behind ./cage, without importing container services."""
 import json
 import signal
 import subprocess
@@ -7,16 +7,20 @@ from . import docker as engine, images, proxy
 from .config import ConfigError, resolve
 from .errors import CageError
 from .instance import Instance
-from .paths import ROOT, LABEL, LAYOUT_LABEL, LAYOUT_VERSION
+from .paths import ROOT, LABEL, LEGACY_LABEL
 from .session import Session
 
 
 def gate_command(container, *arguments):
-    # Keep status/pause/resume usable for instances created before this layout
-    # migration. New containers only use the packaged runtime.
-    labels = container['Config'].get('Labels', {})
-    program = ['-m', 'caged.runtime.network.lease'] if labels.get(LAYOUT_LABEL) == LAYOUT_VERSION else ['/app/lease_gate.py']
-    return ['exec', container['Id'], 'python3', *program, *arguments]
+    return ['exec', container['Id'], 'python3', '-m', 'caged.runtime.network.lease', *arguments]
+
+
+def warn_legacy():
+    """Point at containers this project started under its old caged-browser name."""
+    result = engine.docker('ps', '-aq', '--filter', f'label={LEGACY_LABEL}={ROOT}', check=False)
+    if result.returncode == 0 and result.stdout.split():
+        print('Notice: containers from the old caged-browser layout are still present and may hold the UI port. '
+              'Remove them with: docker rm -f ' + ' '.join(result.stdout.split()), file=sys.stderr)
 
 
 def show_status(instance):
@@ -60,6 +64,7 @@ def main(args):
             engine.stop_managed(name)
         return
     if args.action == 'status':
+        warn_legacy()
         show_status(instance)
         return
     if args.action in ('pause', 'resume'):
@@ -68,6 +73,8 @@ def main(args):
             raise CageError('Managed network container is not running')
         print(engine.docker(*gate_command(current, args.action)).stdout.strip())
         return
+    if args.action == 'start':
+        warn_legacy()
     session = Session(args, detached=args.action == 'start')
     keep_running = False
     try:
@@ -80,7 +87,7 @@ def main(args):
             session.start_clients()
             if args.action == 'start':
                 keep_running = True
-                print(f'Started network, browser and Claude in daemon mode. Open https://localhost:{args.port}; use ./claude to enter Claude, ./stop to stop.', flush=True)
+                print(f'Started network, browser and Claude in daemon mode. Open https://localhost:{args.port}; use ./cage claude to enter Claude, ./cage down to stop.', flush=True)
     finally:
         if not keep_running:
             session.close()
@@ -107,6 +114,3 @@ def cli(argv=None):
         print(f'Error: {error}', file=sys.stderr)
         raise SystemExit(1)
 
-
-if __name__ == '__main__':
-    cli()

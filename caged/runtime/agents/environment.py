@@ -19,7 +19,7 @@ BOOTSTRAP = Path('/run/caged-agent.json')
 
 
 def observation(role):
-    options = json.loads(os.environ['CAGED_BROWSER_POLICY'])
+    options = json.loads(os.environ['CAGED_CLAUDE_POLICY'])
     resolvers = [row.split()[1] for row in Path('/etc/resolv.conf').read_text().splitlines()
                  if row.split()[:1] == ['nameserver']]
     account = pwd.getpwnam(APP_USER)
@@ -46,7 +46,7 @@ def serve(role):
     if private['role'] != role:
         raise RuntimeError('Agent role mismatch')
     key = bytes.fromhex(private['key'])
-    options = json.loads(os.environ['CAGED_BROWSER_POLICY'])
+    options = json.loads(os.environ['CAGED_CLAUDE_POLICY'])
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):

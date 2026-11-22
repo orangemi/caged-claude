@@ -6,18 +6,28 @@ from .instance import Instance
 from .paths import ROOT, LABEL
 
 
+def settings_flags(options):
+    """Translate --instance/--app-settings into launcher settings flags."""
+    flags = []
+    if options.instance is not None:
+        flags += ['--instance', options.instance]
+    if options.app_settings is not None:
+        flags += ['--settings', options.app_settings]
+    return flags
+
+
 def target(instance, role):
     names = Instance(instance)
     name = {'claude': names.claude, 'browser': names.browser, 'network': names.network}[role]
     current = engine.inspect(name)
     if not current or not current['State']['Running']:
-        raise CageError(role.capitalize() + ' container is not running. Run ./start first.')
+        raise CageError(role.capitalize() + ' container is not running. Run ./cage up first.')
     if current['Config'].get('Labels', {}).get(LABEL) != str(ROOT):
         raise CageError('Refusing to enter an unmanaged ' + role.capitalize() + ' container')
     if role != 'network':
         gateway = engine.inspect(names.network)
         if not gateway or not gateway['State']['Running'] or current['HostConfig']['NetworkMode'] != 'container:' + gateway['Id']:
-            raise CageError('The gateway is unavailable or was replaced. Run ./status to inspect this instance.')
+            raise CageError('The gateway is unavailable or was replaced. Run ./cage status to inspect this instance.')
         if gateway['Config'].get('Labels', {}).get(LABEL) != str(ROOT):
             raise CageError('Gateway is not managed by this project')
     return current

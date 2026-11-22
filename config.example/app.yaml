@@ -1,4 +1,4 @@
-# 优先级：启动参数 > CAGED_BROWSER_* 环境变量 > 本文件 > 内置默认值。
+# 优先级：启动参数 > CAGED_CLAUDE_* 环境变量 > 本文件 > 内置默认值。
 # proxy.file_path 省略时读取本文件同目录的 mihomo.yaml；相对路径也以该目录为基准。
 # 可选项均已注释，旁边注明默认值；需要覆盖时取消注释。
 proxy:
@@ -25,7 +25,7 @@ browser:
 #   browser_probe: 19981  # 可选，默认 19981；浏览器容器只读环境探针，不发布。
 #   claude_probe: 19982  # 可选，默认 19982；Claude 容器只读环境探针，不发布。
 
-# instance: caged-browser  # 可选，默认 caged-browser。
+# instance: caged-claude  # 可选，默认 caged-claude。
 
 # 可选，默认 []，不挂载 workspace；可填写一个路径或路径列表。
 # 两种应用都以相同绝对路径读写挂载。

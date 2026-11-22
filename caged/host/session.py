@@ -102,7 +102,7 @@ class Session:
         if self.args.port != int(local[0]['HostPort']):
             raise CageError('Existing gateway uses a different UI port; use the same settings/overrides for both launchers.')
         self.network_container_id = state['Id']
-        self.network_session_id = state['Config']['Labels'].get('io.caged-browser.session')
+        self.network_session_id = state['Config']['Labels'].get('io.caged-claude.session')
         if not self.network_session_id:
             raise CageError('Network session identity is missing.')
 
@@ -150,9 +150,9 @@ class Session:
                    '-e', 'CHROME_CLI=' + flags, images.IMAGES['browser']]
 
     def managed_labels(self, client=False):
-        labels = {LABEL: str(ROOT), LAYOUT_LABEL: LAYOUT_VERSION, 'io.caged-browser.session': self.session_id}
+        labels = {LABEL: str(ROOT), LAYOUT_LABEL: LAYOUT_VERSION, 'io.caged-claude.session': self.session_id}
         if client:
-            labels['io.caged-browser.network-session'] = self.network_session_id
+            labels['io.caged-claude.network-session'] = self.network_session_id
         return [item for key, value in labels.items() for item in ('--label', f'{key}={value}')]
 
     def common_environment(self):
@@ -330,7 +330,7 @@ class Session:
                 labels = state.get('Config', {}).get('Labels', {})
                 if labels.get(LABEL) != str(ROOT):
                     raise CageError('The network container is not managed by this project.')
-                if session_id and labels.get('io.caged-browser.session') != session_id:
+                if session_id and labels.get('io.caged-claude.session') != session_id:
                     raise CageError('The network container belongs to a different launcher.')
                 if state['State']['Running']:
                     result = engine.docker('exec', state['Id'], 'cat', '/run/caged/ready.json', check=False)
@@ -339,6 +339,6 @@ class Session:
             if process is not None and process.poll() is not None:
                 raise CageError('Network exited before readiness. Browser was not started.')
             if process is None and (state is None or not state['State']['Running']):
-                raise CageError('Gateway exited before readiness. Run ./start again.')
+                raise CageError('Gateway exited before readiness. Run ./cage up again.')
             time.sleep(0.3)
         raise CageError('Gateway readiness timed out')

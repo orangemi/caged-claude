@@ -29,7 +29,7 @@ def stop_managed(name, session_id=None):
         return
     if current.get('Config', {}).get('Labels', {}).get(LABEL) != str(ROOT):
         raise CageError(f'Refusing to stop an unmanaged container named {name}')
-    if session_id and current['Config']['Labels'].get('io.caged-browser.session') != session_id:
+    if session_id and current['Config']['Labels'].get('io.caged-claude.session') != session_id:
         return
     docker('stop', '-t', '12', current['Id'], check=False, timeout=20)
     # --rm removal can lag behind stop. Return only when the old name is free;
@@ -72,4 +72,4 @@ def write_private(container, path, payload, timeout):
 def ensure_names_available(names):
     for name in names:
         if inspect(name) is not None:
-            raise CageError(f'Container {name} already exists. Use ./status to inspect it or ./stop to stop this instance.')
+            raise CageError(f'Container {name} already exists. Use ./cage status to inspect it or ./cage down to stop this instance.')

@@ -22,14 +22,14 @@ class ContainerEntry(unittest.TestCase):
     def test_bash_uses_the_running_app_identity_and_allocates_a_terminal(self):
         with patch.object(engine, 'inspect', side_effect=[self.client, self.gateway]) as inspect:
             result = shell.command([], tty=True)
-        self.assertEqual([call.args[0] for call in inspect.call_args_list], ['fixture-claude', 'fixture-net'])
+        self.assertEqual([call.args[0] for call in inspect.call_args_list], ['fixture-claude', 'fixture-network'])
         self.assertEqual(result, ['docker', 'exec', '-i', '-t', '--user', '2101:3101', 'client-id', 'bash', '-l'])
 
     def test_browser_role_and_command_arguments_are_forwarded_without_shell_expansion(self):
         arguments = ['printf', '%s', '$(touch /tmp/should-not-run)', '--instance', 'literal-value']
         with patch.object(engine, 'inspect', side_effect=[self.client, self.gateway]) as inspect:
             result = shell.command(['browser', '--', *arguments], tty=False)
-        self.assertEqual(inspect.call_args_list[0].args[0], 'fixture')
+        self.assertEqual(inspect.call_args_list[0].args[0], 'fixture-browser')
         self.assertEqual(result[-len(arguments):], arguments)
         self.assertNotIn('-t', result)
 
@@ -44,7 +44,7 @@ class ContainerEntry(unittest.TestCase):
     def test_network_uses_its_available_sh_and_does_not_need_app_identity(self):
         with patch.object(engine, 'inspect', return_value=self.gateway) as inspect:
             result = shell.command(['network'], tty=False)
-        inspect.assert_called_once_with('fixture-net')
+        inspect.assert_called_once_with('fixture-network')
         self.assertIn('0:0', result)
         self.assertEqual(result[-2:], ['network-id', 'sh'])
 

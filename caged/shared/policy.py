@@ -2,7 +2,7 @@
 import json
 import os
 
-POLICY_ENV = 'CAGED_BROWSER_POLICY'
+POLICY_ENV = 'CAGED_CLAUDE_POLICY'
 BROWSER_HTTPS_PORT = 3001  # The upstream desktop image's HTTPS service port.
 APP_USER = 'claude-user'
 BROWSER_DNS_POLICIES = {'DnsOverHttpsMode': 'off', 'BuiltInDnsClientEnabled': False}
@@ -16,7 +16,7 @@ def policy():
     try:
         result = json.loads(os.environ[POLICY_ENV])
     except (KeyError, ValueError):
-        raise RuntimeError('Resolved runtime policy is missing; start containers through ./start') from None
+        raise RuntimeError('Resolved runtime policy is missing; start containers through ./cage up') from None
     return result
 
 

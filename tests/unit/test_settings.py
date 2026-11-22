@@ -27,7 +27,7 @@ class Settings(unittest.TestCase):
         self.data['browser'].update(timezone='Europe/Berlin', locale='de_DE.UTF-8', language='de-DE',
                                     puid='host', pgid='host', shm_size='1g')
         self.data['ports'] = {'ui': 4321, 'controller': 19090, 'mixed': 19890, 'debug': 19222}
-        self.data['instance'] = 'caged-browser'
+        self.data['instance'] = 'caged-claude'
         self.write()
 
     def tearDown(self):
@@ -64,7 +64,7 @@ class Settings(unittest.TestCase):
         self.assertEqual((args.node, args.timezone), ('European fixture', 'Europe/Berlin'))
         self.assertEqual(args.sources['port'], 'default')
         self.assertEqual(args.proxy_file_path, self.folder / 'mihomo.yaml')
-        self.assertEqual(args.instance, 'caged-browser')
+        self.assertEqual(args.instance, 'caged-claude')
         for key in ('proxy_file_path', 'instance'):
             self.assertEqual(args.sources[key], 'default')
 
@@ -73,11 +73,11 @@ class Settings(unittest.TestCase):
         del self.data['browser']['locale']
         del self.data['browser']['language']
         self.write()
-        args = self.parse(env={'CAGED_BROWSER_LANGUAGE': 'fr-CA', 'CAGED_BROWSER_PORT': '5678'})
+        args = self.parse(env={'CAGED_CLAUDE_LANGUAGE': 'fr-CA', 'CAGED_CLAUDE_PORT': '5678'})
         self.assertEqual((args.locale, args.language, args.port, args.controller_port),
                          ('en_US.UTF-8', 'fr-CA', 5678, 9090))
         args = self.parse('--language', 'ja-JP', '--port', '6789',
-                          env={'CAGED_BROWSER_LANGUAGE': 'invalid environment value', 'CAGED_BROWSER_PORT': 'invalid'})
+                          env={'CAGED_CLAUDE_LANGUAGE': 'invalid environment value', 'CAGED_CLAUDE_PORT': 'invalid'})
         self.assertEqual((args.language, args.port), ('ja-JP', 6789))
 
     def test_explicit_invalid_optional_values_do_not_silently_use_defaults(self):
@@ -87,8 +87,8 @@ class Settings(unittest.TestCase):
             self.parse()
 
     def test_cli_overrides_environment_which_overrides_file(self):
-        env = {'CAGED_BROWSER_NODE': 'environment node', 'CAGED_BROWSER_PORT': '5432',
-               'CAGED_BROWSER_TIMEZONE': 'America/New_York', 'CAGED_BROWSER_LANGUAGE': 'fr-CA'}
+        env = {'CAGED_CLAUDE_NODE': 'environment node', 'CAGED_CLAUDE_PORT': '5432',
+               'CAGED_CLAUDE_TIMEZONE': 'America/New_York', 'CAGED_CLAUDE_LANGUAGE': 'fr-CA'}
         args = self.parse(env=env)
         self.assertEqual((args.node, args.port, args.timezone, args.languages),
                          ('environment node', 5432, 'America/New_York', ['fr-CA', 'fr']))
@@ -98,23 +98,23 @@ class Settings(unittest.TestCase):
     def test_overridden_invalid_lower_priority_values_do_not_fail(self):
         self.data['ports']['ui'] = 'invalid configuration value'
         self.write()
-        self.assertEqual(self.parse(env={'CAGED_BROWSER_PORT': '5432'}).port, 5432)
-        self.assertEqual(self.parse('--port', '6543', env={'CAGED_BROWSER_PORT': 'invalid environment value'}).port, 6543)
+        self.assertEqual(self.parse(env={'CAGED_CLAUDE_PORT': '5432'}).port, 5432)
+        self.assertEqual(self.parse('--port', '6543', env={'CAGED_CLAUDE_PORT': 'invalid environment value'}).port, 6543)
 
     def test_cli_selects_settings_file_over_environment(self):
         other = self.folder / 'other.yaml'
         changed = copy.deepcopy(self.data)
         changed['instance'] = 'environment-file'
         other.write_text(json.dumps(changed))
-        args = resolve([], environ={'CAGED_BROWSER_SETTINGS': str(other)})
+        args = resolve([], environ={'CAGED_CLAUDE_SETTINGS': str(other)})
         self.assertEqual(args.instance, 'environment-file')
-        self.assertEqual(self.parse(env={'CAGED_BROWSER_SETTINGS': str(other)}).instance, self.data['instance'])
+        self.assertEqual(self.parse(env={'CAGED_CLAUDE_SETTINGS': str(other)}).instance, self.data['instance'])
 
     def test_proxy_paths_are_relative_to_yaml_but_cli_and_env_paths_use_cwd(self):
         self.data['proxy']['file_path'] = 'nodes/custom.yaml'
         self.write()
         self.assertEqual(self.parse().proxy_file_path, self.folder / 'nodes/custom.yaml')
-        env = {'CAGED_BROWSER_PROXY_FILE_PATH': 'env.yaml'}
+        env = {'CAGED_CLAUDE_PROXY_FILE_PATH': 'env.yaml'}
         args = self.parse(env=env)
         self.assertEqual(args.proxy_file_path, Path.cwd() / 'env.yaml')
         self.assertEqual(args.sources['proxy_file_path'], 'env')
@@ -130,9 +130,9 @@ class Settings(unittest.TestCase):
         self.data['proxy']['file_path'] = 'canonical.yaml'
         self.write()
         self.assertEqual(self.parse().proxy_file_path, self.folder / 'canonical.yaml')
-        env = {'CAGED_BROWSER_PROXY_CONFIG': 'legacy-env.yaml'}
+        env = {'CAGED_CLAUDE_PROXY_CONFIG': 'legacy-env.yaml'}
         self.assertEqual(self.parse(env=env).proxy_file_path, Path.cwd() / 'legacy-env.yaml')
-        env['CAGED_BROWSER_PROXY_FILE_PATH'] = 'canonical-env.yaml'
+        env['CAGED_CLAUDE_PROXY_FILE_PATH'] = 'canonical-env.yaml'
         self.assertEqual(self.parse(env=env).proxy_file_path, Path.cwd() / 'canonical-env.yaml')
         for flag in ('--config', '--proxy-config'):
             self.assertEqual(self.parse(flag, 'legacy-cli.yaml', env=env).proxy_file_path, Path.cwd() / 'legacy-cli.yaml')
@@ -140,8 +140,8 @@ class Settings(unittest.TestCase):
     def test_instance_default_can_be_overridden_by_environment_and_cli(self):
         del self.data['instance']
         self.write()
-        self.assertEqual(self.parse().instance, 'caged-browser')
-        env = {'CAGED_BROWSER_INSTANCE': 'from-env'}
+        self.assertEqual(self.parse().instance, 'caged-claude')
+        env = {'CAGED_CLAUDE_INSTANCE': 'from-env'}
         self.assertEqual(self.parse(env=env).instance, 'from-env')
         self.assertEqual(self.parse('--instance', 'from-cli', env=env).instance, 'from-cli')
 
@@ -223,7 +223,7 @@ class Settings(unittest.TestCase):
         self.write()
         args = self.parse()
         self.assertEqual((args.puid, args.pgid), (1000, 1000))
-        env = {'CAGED_BROWSER_PUID': '2001', 'CAGED_BROWSER_PGID': '2002'}
+        env = {'CAGED_CLAUDE_PUID': '2001', 'CAGED_CLAUDE_PGID': '2002'}
         self.assertEqual((self.parse(env=env).puid, self.parse(env=env).pgid), (2001, 2002))
         args = self.parse('--puid', '3001', env=env)
         self.assertEqual((args.puid, args.pgid), (3001, 2002))
@@ -293,8 +293,8 @@ class Settings(unittest.TestCase):
         self.write()
         args=self.parse('--workspace',str(second))
         self.assertEqual(args.workspace,[second])
-        self.assertEqual(self.parse(env={'CAGED_BROWSER_WORKSPACE':'[]'}).workspace,[])
-        self.assertEqual(self.parse(env={'CAGED_BROWSER_WORKSPACE':str(second)}).workspace,[second])
+        self.assertEqual(self.parse(env={'CAGED_CLAUDE_WORKSPACE':'[]'}).workspace,[])
+        self.assertEqual(self.parse(env={'CAGED_CLAUDE_WORKSPACE':str(second)}).workspace,[second])
         session=Session(args)
         session.network_container_id,session.network_session_id='fixture-id','fixture-session'
         browser,claude=session.browser_command(),session.claude_command()

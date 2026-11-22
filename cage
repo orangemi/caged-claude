@@ -1,0 +1,197 @@
+#!/bin/sh
+# Caged Claude: run Claude Code in Docker behind a fail-closed proxy gateway.
+#
+# The host needs only this POSIX sh script and Docker. Everything except
+# `help` and `init` runs the Python launcher (caged/host) inside a small
+# launcher container that drives the host Docker daemon. Set CAGED_NATIVE=1
+# to run the launcher with the host's python3 instead (needs PyYAML).
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+
+usage() {
+    cat <<'EOF'
+Usage: ./cage <command> [options]
+
+Setup
+  init [--mihomo FILE]      Create config/ from config.example/ (keeps existing
+                            files); --mihomo copies your node file into place
+  nodes                     List the nodes in config/mihomo.yaml
+
+Run
+  up [options]              Start network, browser and Claude in the background
+                            (e.g. --node 'SG 01', --port 3003, --workspace DIR)
+  status                    Show containers and the network permit
+  claude [args...]          Run Claude Code in the running container
+  shell [claude|browser|network] [--root] [-- command...]
+                            Open a shell (default: claude) or run one command
+  logs [network|browser|claude] [-f] [-n LINES]
+                            Show container logs (default: network)
+  pause | resume            Cut outbound traffic now / re-check and reopen it
+  down                      Stop and remove this instance's containers
+
+Maintenance
+  check test                Unit and isolated Docker tests (no node needed)
+  check verify|smoke|audit  Checks against the real node (see README)
+  build                     Rebuild all images
+  help                      Show this help
+
+Every command except help/init accepts --instance NAME; `<command> --help`
+lists the rest. Options resolve as CLI > CAGED_CLAUDE_* env > config/app.yaml
+> defaults.
+
+Launcher environment
+  CAGED_NATIVE=1            Run on the host python3 instead of a container
+  CAGED_MOUNTS=DIR:DIR      Extra read-only mounts (workspaces outside $HOME)
+  CAGED_DOCKER_SOCK=PATH    Docker socket to mount (default /var/run/docker.sock)
+EOF
+}
+
+fail() {
+    printf 'Error: %s\n' "$1" >&2
+    exit 1
+}
+
+init() {
+    mihomo=
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --mihomo) [ $# -ge 2 ] || fail '--mihomo needs a file'; mihomo=$2; shift 2 ;;
+            --mihomo=*) mihomo=${1#--mihomo=}; shift ;;
+            *) fail "unknown init option: $1" ;;
+        esac
+    done
+    config=$root/config
+    mkdir -p "$config"
+    chmod 700 "$config"
+    if [ -n "$mihomo" ]; then
+        [ -f "$mihomo" ] || fail "node file not found: $mihomo"
+        [ -e "$config/mihomo.yaml" ] && cp "$config/mihomo.yaml" "$config/mihomo.yaml.bak" \
+            && echo "Backed up the existing node file to config/mihomo.yaml.bak"
+        cp "$mihomo" "$config/mihomo.yaml"
+        echo "Copied $mihomo to config/mihomo.yaml"
+    fi
+    for name in app.yaml mihomo.yaml; do
+        if [ -e "$config/$name" ]; then
+            echo "Kept existing config/$name"
+        else
+            cp "$root/config.example/$name" "$config/$name"
+            echo "Created config/$name from config.example/"
+        fi
+        chmod 600 "$config/$name"
+    done
+    cat <<'EOF'
+
+Next:
+  1. Put your real nodes in config/mihomo.yaml (or: ./cage init --mihomo FILE)
+  2. ./cage nodes            and copy an anytls node name
+  3. Edit config/app.yaml    proxy.node, proxy.expected_country, browser.timezone
+  4. ./cage up
+EOF
+}
+
+native() {
+    export PYTHONDONTWRITEBYTECODE=1
+    export PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}"
+    # Put the project first on sys.path so a `caged` package in the caller's
+    # directory cannot shadow it, while relative arguments keep the caller's cwd.
+    exec python3 -c "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); sys.argv[0]='cage'; runpy.run_module('caged.host.main',run_name='__main__')" "$root" "$@"
+}
+
+under() {  # under <path> <directory>: the path is the directory or inside it
+    case $1/ in "$2"/*) return 0 ;; esac
+    return 1
+}
+
+launch() {
+    command -v docker >/dev/null 2>&1 || fail 'Docker CLI not found. Install OrbStack, Docker Desktop or Docker Engine.'
+    case $root in
+        *,*) fail "Project path cannot contain a comma: $root" ;;
+    esac
+
+    # The daemon socket as seen by the daemon's host. OrbStack and Docker
+    # Desktop expose it at /var/run/docker.sock inside containers whatever
+    # DOCKER_HOST says on macOS; on Linux a unix DOCKER_HOST (e.g. rootless)
+    # is a real path.
+    sock=${CAGED_DOCKER_SOCK:-}
+    if [ -z "$sock" ]; then
+        case ${DOCKER_HOST:-} in
+            unix://*) [ "$(uname -s)" = Linux ] && sock=${DOCKER_HOST#unix://} ;;
+            '') ;;
+            *) fail "DOCKER_HOST=$DOCKER_HOST is not a local socket; set CAGED_DOCKER_SOCK, or CAGED_NATIVE=1 to run on the host." ;;
+        esac
+        sock=${sock:-/var/run/docker.sock}
+    fi
+    linux=
+    if [ "$(uname -s)" = Linux ]; then
+        linux=1
+        # On macOS the path is resolved inside the Docker VM; only Linux can check it.
+        [ -S "$sock" ] || fail "Docker socket not found at $sock; set CAGED_DOCKER_SOCK."
+    fi
+
+    # The image holds only dependencies (the source is bind-mounted), so it is
+    # tagged by its Dockerfile checksum and built once.
+    dockerfile=$root/containers/launcher/Dockerfile
+    image=caged-claude-launcher:$(cksum < "$dockerfile" | cut -d ' ' -f 1)
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        docker info >/dev/null 2>&1 || fail 'Docker daemon is not reachable. Start OrbStack/Docker and try again.'
+        printf 'Building launcher image %s (first run only)...\n' "$image" >&2
+        docker build -q -t "$image" - < "$dockerfile" >/dev/null || fail 'Launcher image build failed.'
+    fi
+
+    # Append launcher options after the caller's arguments, then rotate the
+    # caller's arguments back to the end; POSIX sh has only one array.
+    count=$#
+    set -- "$@" run --rm -i --init \
+        --mount "type=bind,src=$sock,dst=/var/run/docker.sock" \
+        --mount "type=bind,src=$root,dst=$root" \
+        -e HOME -e TERM -e "CAGED_HOST_UID=$(id -u)" -e "CAGED_HOST_GID=$(id -g)" \
+        -w "$PWD"
+    # Settings, node files and workspaces are validated inside the launcher,
+    # so it sees them at their host paths, read-only.
+    home=${HOME:-}
+    [ "$home" = / ] && home=
+    if [ -n "$home" ]; then
+        set -- "$@" --mount "type=bind,src=$home,dst=$home,readonly"
+    fi
+    if ! under "$PWD" "$root" && { [ -z "$home" ] || ! under "$PWD" "$home"; }; then
+        set -- "$@" --mount "type=bind,src=$PWD,dst=$PWD,readonly"
+    fi
+    old_ifs=$IFS
+    IFS=:
+    for extra in ${CAGED_MOUNTS:-}; do
+        [ -n "$extra" ] && set -- "$@" --mount "type=bind,src=$extra,dst=$extra,readonly"
+    done
+    IFS=$old_ifs
+    for name in $(env | sed -n 's/^\(CAGED_CLAUDE_[A-Za-z0-9_]*\)=.*/\1/p'); do
+        set -- "$@" -e "$name"
+    done
+    if [ -n "$linux" ]; then
+        # Files the launcher creates (config/.claude) stay owned by the caller.
+        socket_group=$(stat -c %g "$sock")
+        set -- "$@" --user "$(id -u):$(id -g)" --group-add "$socket_group"
+    fi
+    if [ -t 0 ] && [ -t 1 ]; then
+        set -- "$@" -t
+    fi
+    set -- "$@" "$image" sh "$root/cage"
+
+    while [ "$count" -gt 0 ]; do
+        argument=$1
+        shift
+        set -- "$@" "$argument"
+        count=$((count - 1))
+    done
+    exec docker "$@"
+}
+
+case ${1:-help} in
+    help|-h|--help) usage; exit 0 ;;
+    init) shift; init "$@"; exit 0 ;;
+esac
+
+# Inside the launcher image (CAGED_LAUNCHER=1) the same script runs natively.
+if [ "${CAGED_NATIVE:-}" = 1 ] || [ "${CAGED_LAUNCHER:-}" = 1 ]; then
+    native "$@"
+fi
+launch "$@"

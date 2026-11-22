@@ -14,11 +14,11 @@ class Instance:
 
     @property
     def network(self):
-        return self.name + '-net'
+        return self.name + '-network'
 
     @property
     def browser(self):
-        return self.name
+        return self.name + '-browser'
 
     @property
     def claude(self):

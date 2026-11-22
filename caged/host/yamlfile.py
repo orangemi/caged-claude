@@ -9,7 +9,7 @@ def load(path):
     try:
         import yaml
     except ImportError:
-        raise YamlError('PyYAML is required to read the configuration. Use ./start (it runs in the '
+        raise YamlError('PyYAML is required to read the configuration. Use ./cage (it runs in the '
                         'launcher container), or install PyYAML for CAGED_NATIVE=1.') from None
     try:
         with open(path, encoding='utf-8') as source:

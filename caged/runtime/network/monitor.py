@@ -112,7 +112,7 @@ class Monitor:
         self.last_published = None
         # A confirmed violation remains latched across a monitor crash.
         if (gate.ROOT / 'violation').exists():
-            self.state, self.reason = 'blocked', 'Confirmed policy violation; explicit ./start resume is required'
+            self.state, self.reason = 'blocked', 'Confirmed policy violation; explicit ./cage resume is required'
 
     def close(self, state, reason, recover=False):
         gate.revoke()
@@ -141,7 +141,7 @@ class Monitor:
         now = self.clock()
         if (gate.ROOT / 'manual-pause').exists():
             if self.state != 'paused':
-                self.close('paused', 'Manually paused; explicit ./start resume is required')
+                self.close('paused', 'Manually paused; explicit ./cage resume is required')
             self.publish()
             return
         resume = gate.ROOT / 'resume-request'

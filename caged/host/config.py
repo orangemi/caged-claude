@@ -11,11 +11,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from . import yamlfile
 from .paths import ROOT
 DEFAULT_SETTINGS = ROOT / 'config' / 'app.yaml'
-PREFIX = 'CAGED_BROWSER_'
+PREFIX = 'CAGED_CLAUDE_'
 # Optional operational defaults; node, timezone and policy choices stay explicit.
 DEFAULTS = {
     'proxy_file_path': 'mihomo.yaml',
-    'instance': 'caged-browser',
+    'instance': 'caged-claude',
     'dns_upstream': 'https://1.1.1.1/dns-query',
     'locale': 'en_US.UTF-8',
     'language': 'en-US',
@@ -107,7 +107,7 @@ def resolve(argv=None, environ=None):
     env = os.environ if environ is None else environ
     parser = argparse.ArgumentParser(description='Run browser and Claude containers behind a fail-closed proxy gateway.')
     parser.add_argument('action', nargs='?', default='start', choices=ACTIONS)
-    parser.add_argument('--settings', help='application YAML; env: CAGED_BROWSER_SETTINGS')
+    parser.add_argument('--settings', help='application YAML; env: CAGED_CLAUDE_SETTINGS')
     for name, (key, variable) in FIELDS.items():
         flags = ['--' + name.replace('_', '-')]
         if name == 'proxy_file_path':

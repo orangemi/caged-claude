@@ -28,7 +28,7 @@ class ProcessLifecycle(unittest.TestCase):
             self.port = server.getsockname()[1]
 
     def launch(self, action, fail=False):
-        env={key:value for key,value in os.environ.items() if not key.startswith('CAGED_BROWSER_')}
+        env={key:value for key,value in os.environ.items() if not key.startswith('CAGED_CLAUDE_')}
         env.update(PYTHONPATH=str(ROOT), PYTHONDONTWRITEBYTECODE='1')
         if fail:env['CAGED_TEST_FAIL_CLAUDE']='1'
         result=subprocess.run([sys.executable, '-u', str(ROOT/'tests/fixtures/lifecycle_launcher.py'), action,
@@ -67,7 +67,7 @@ class ProcessLifecycle(unittest.TestCase):
             self.assertEqual(mounts[str(self.workspace)],str(self.workspace))
         env=lambda name:dict(item.split('=',1) for item in engine.inspect(name)['Config']['Env'] if '=' in item)
         browser,claude=env(self.names.browser),env(self.names.claude)
-        for key in ('TZ','LANG','LC_ALL','LANGUAGE','PUID','PGID','CAGED_BROWSER_POLICY'):
+        for key in ('TZ','LANG','LC_ALL','LANGUAGE','PUID','PGID','CAGED_CLAUDE_POLICY'):
             self.assertEqual(browser[key],claude[key],key)
 
     def test_stop_removes_all_containers_and_keeps_persistent_state(self):

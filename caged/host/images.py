@@ -6,9 +6,9 @@ from . import docker as engine
 from .errors import CageError
 from .paths import ROOT
 
-IMAGES = {'network': 'caged-browser-gateway:local',
-          'browser': 'caged-browser-chromium:local',
-          'claude': 'caged-browser-claude:local'}
+IMAGES = {'network': 'caged-claude-network:local',
+          'browser': 'caged-claude-browser:local',
+          'claude': 'caged-claude-claude:local'}
 
 
 def input_files(role):
@@ -49,9 +49,9 @@ def source_hash(role):
 def build(role='network', force=False):
     image = IMAGES[role]
     expected = source_hash(role)
-    actual = engine.docker('image', 'inspect', image, '--format', '{{index .Config.Labels "io.caged-browser.source"}}', check=False)
+    actual = engine.docker('image', 'inspect', image, '--format', '{{index .Config.Labels "io.caged-claude.source"}}', check=False)
     if force or actual.returncode or actual.stdout.strip() != expected:
-        result = subprocess.run(['docker', 'build', '--label', 'io.caged-browser.source=' + expected,
+        result = subprocess.run(['docker', 'build', '--label', 'io.caged-claude.source=' + expected,
                                  '-t', image, '-f', str(ROOT / 'containers' / role / 'Dockerfile'), str(ROOT)])
         if result.returncode:
             raise CageError(role + ' image build failed')

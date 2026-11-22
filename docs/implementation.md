@@ -1,6 +1,6 @@
-# Caged Browser 实现原理
+# Caged Claude 实现原理
 
-本文说明当前 `caged-browser` 的实际实现：后台运行独立的 Chromium、Claude Code 与网络网关三个容器，两个应用通过同一个受控网络空间访问公网，并在代理失效时阻止回退直连。
+本文说明当前 `caged-claude` 的实际实现：后台运行独立的 Chromium、Claude Code 与网络网关三个容器，两个应用通过同一个受控网络空间访问公网，并在代理失效时阻止回退直连。
 
 日常使用见 [README](../README.md)。本文对应 2026-11-20 的代码，不包含节点密码、订阅内容或运行时控制密钥。
 
@@ -10,10 +10,10 @@
 
 | 组件 | 默认名称 | 职责 |
 | --- | --- | --- |
-| 网络容器 | `caged-browser-net` | 安装防火墙，运行 mihomo、TUN 和 DNS，连接选定代理节点 |
-| 浏览器容器 | `caged-browser` | 运行 Chromium 与网页桌面，加入网络容器的网络命名空间 |
-| Claude 容器 | `caged-browser-claude` | 保持独立的开发环境与持久化状态目录，加入同一个网络命名空间；CLI 按需执行 |
-| 宿主入口 | `./start`、`./stop`、`./status`、`./claude`、`./shell` | 后台启动、明确停止、状态查看与进入 Claude CLI 或容器 Shell |
+| 网络容器 | `caged-claude-network` | 安装防火墙，运行 mihomo、TUN 和 DNS，连接选定代理节点 |
+| 浏览器容器 | `caged-claude-browser` | 运行 Chromium 与网页桌面，加入网络容器的网络命名空间 |
+| Claude 容器 | `caged-claude-claude` | 保持独立的开发环境与持久化状态目录，加入同一个网络命名空间；CLI 按需执行 |
+| 宿主入口 | `./cage`（`up`、`down`、`status`、`claude`、`shell`、`logs` 等子命令） | 后台启动、明确停止、状态查看、日志与进入 Claude CLI 或容器 Shell |
 
 `verify`、`audit` 会临时增加一个无额外能力的检查容器，检查结束后删除。它不是日常运行所需的第四个服务。
 
@@ -60,9 +60,9 @@ browser 和 claude 启动时都使用：
 
 ### 3.1 统一解析配置
 
-`caged/host/config.py` 先确定应用 YAML：`--settings` 优先于 `CAGED_BROWSER_SETTINGS`，再使用项目内的 `config/app.yaml`。该文件保存节点选择、节点文件路径、期望国家、DoH、时区、locale、语言、UID/GID、共享内存大小、实例名和 UI/控制器/mixed/DevTools 端口。
+`caged/host/config.py` 先确定应用 YAML：`--settings` 优先于 `CAGED_CLAUDE_SETTINGS`，再使用项目内的 `config/app.yaml`。该文件保存节点选择、节点文件路径、期望国家、DoH、时区、locale、语言、UID/GID、共享内存大小、实例名和 UI/控制器/mixed/DevTools 端口。
 
-每个字段再按“命令行参数 > 对应的 `CAGED_BROWSER_*` 环境变量 > 应用 YAML > 内置默认值”独立解析。节点文件默认 `mihomo.yaml`，实例名默认 `caged-browser`；这些与常规 DoH、locale、语言、UID/GID、共享内存和端口默认值集中保存在 `caged/host/config.py` 的 `DEFAULTS`。实际配置可以省略这些项，`config.example/app.yaml` 将所有可选项注释并注明默认值。节点与时区没有内置地区偏好。
+每个字段再按“命令行参数 > 对应的 `CAGED_CLAUDE_*` 环境变量 > 应用 YAML > 内置默认值”独立解析。节点文件默认 `mihomo.yaml`，实例名默认 `caged-claude`；这些与常规 DoH、locale、语言、UID/GID、共享内存和端口默认值集中保存在 `caged/host/config.py` 的 `DEFAULTS`。实际配置可以省略这些项，`config.example/app.yaml` 将所有可选项注释并注明默认值。节点与时区没有内置地区偏好。
 
 browser 与 claude 的应用用户名固定为 `claude-user`。UID/GID 默认值为 `host`，在每次解析时取启动者身份：launcher 容器内使用入口脚本传入的 `CAGED_HOST_UID` / `CAGED_HOST_GID`，宿主直接运行时调用 `os.getuid()` / `os.getgid()`，显式整数按同样的配置优先级覆盖。镜像构建不依赖某一台 Mac 的数字身份。浏览器派生镜像在构建时重命名上游账号，并同步适配其 s6 服务与桌面默认脚本中的账号引用，保留原有的运行时 PUID/PGID 重映射；Claude 启动脚本调整同名账号。运行策略和签名环境探针也核对固定用户名及实际 UID/GID。
 
@@ -70,11 +70,11 @@ browser 与 claude 的应用用户名固定为 `claude-user`。UID/GID 默认值
 
 `proxy.file_path` 省略时读取应用 YAML 同目录的 `mihomo.yaml`，填写相对路径时也以该目录为基准；CLI/环境变量指定的相对路径以调用目录为基准。旧 YAML 键 `proxy.config` 及旧环境变量、CLI 别名仍兼容。`proxy.expected_country` 可用两位国家代码，也可以设为 `null`/`any` 取消国家限制；其他网络检查继续执行。完整字段映射见 [README 的配置优先级](../README.md#配置优先级)。
 
-解析后的非机密策略通过 `CAGED_BROWSER_POLICY` 传给网关、浏览器、Claude 和检查容器；每次执行探针也显式传入同一份策略。节点密码仍仅通过网关标准输入传输。这样改变时区、语言或国家时，生成配置、真实运行和审计的期望值同步变化。
+解析后的非机密策略通过 `CAGED_CLAUDE_POLICY` 传给网关、浏览器、Claude 和检查容器；每次执行探针也显式传入同一份策略。节点密码仍仅通过网关标准输入传输。这样改变时区、语言或国家时，生成配置、真实运行和审计的期望值同步变化。
 
 ### 3.2 顺序启动
 
-`./start` 按依赖顺序启动三个容器：
+`./cage up` 按依赖顺序启动三个容器：
 
 1. 检查实例名称和本地端口是否可用。
 2. 从 `proxy.file_path` 指定的节点文件（默认应用 YAML 同目录的 `mihomo.yaml`）读取 `proxy.node`，检查是否为当前支持的独立 AnyTLS 节点。
@@ -87,7 +87,7 @@ browser 与 claude 的应用用户名固定为 `claude-user`。UID/GID 默认值
 9. 业务网络保持关闭，启动浏览器容器，使其加入同一网络命名空间；先检查本地实际 DNS 策略、语言、时区和网页桌面入口。
 10. 启动 Claude，核对同一份时区、locale、语言、UID/GID、CLI 版本和授权目录可写。
 11. 给两个应用的只读环境探针分别注入 root 私有密钥。网关验证随机挑战、会话身份、配置摘要和实际环境，再获取新鲜 DNS 与出口证据，更新内核限时许可。
-12. 放行后再验证真实 Chromium 与 Claude 的普通网络路径。检查通过后启动命令返回；network 内持续监控，后续通过 `./status` 和 `./stop` 管理。
+12. 放行后再验证真实 Chromium 与 Claude 的普通网络路径。检查通过后启动命令返回；network 内持续监控，后续通过 `./cage status` 和 `./cage down` 管理。
 
 网关未就绪、DNS 失败或出口不符合配置策略时，本次启动会报错并进入清理。浏览器检查失败也会结束本次会话。显示访问地址不代表运行了完整 `audit`；完整故障演练需要单独执行。
 
@@ -216,7 +216,7 @@ IPv6 的输入、转发、输出也默认拒绝，仅允许回环。IPv4 输入�
 
 暂停时保留网络容器。网关诊断进程用受能力保护的 `SO_MARK` 发起固定 DNS/HTTPS 探针，经同一 TUN 和选定节点，其他出站限制仍然生效。DNS 查询和 TLS socket 都显式标记，TLS 继续验证目标证书。应用无法取得这种能力；mixed 代理有独立随机鉴权，未认证连接必须返回 407。恢复检查不会临时打开整个公网。
 
-`./start pause` 通过 Docker 管理入口写入私有暂停意图并立即清除许可；`./start resume` 只请求新检查。控制写入与续期使用文件锁，暂停期间或尚有恢复请求时不准续期，避免慢探针覆盖新的用户操作。网关状态查询同时读取实际内核剩余时间，监控进程卡住时也不会仅显示旧的成功记录。
+`./cage pause` 通过 Docker 管理入口写入私有暂停意图并立即清除许可；`./cage resume` 只请求新检查。控制写入与续期使用文件锁，暂停期间或尚有恢复请求时不准续期，避免慢探针覆盖新的用户操作。网关状态查询同时读取实际内核剩余时间，监控进程卡住时也不会仅显示旧的成功记录。
 
 ## 8. 管理接口与浏览器设置
 
@@ -246,15 +246,15 @@ IPv6 的输入、转发、输出也默认拒绝，仅允许回环。IPv4 输入�
 
 ### 9.1 服务入口与后台容器
 
-`./start` 使用 `docker run -d --rm` 启动三个服务，检查通过后返回，不保留前台监督进程。启动中断或任何一步失败时，只回滚清理本次创建的容器。`./stop` 按 Claude、浏览器、网关的顺序停止，并等待自动删除完成后返回，避免紧接着启动时名称仍被占用。绑定的宿主数据不随容器删除。
+`./cage up` 使用 `docker run -d --rm` 启动三个服务，检查通过后返回，不保留前台监督进程。启动中断或任何一步失败时，只回滚清理本次创建的容器。`./cage down` 按 Claude、浏览器、网关的顺序停止，并等待自动删除完成后返回，避免紧接着启动时名称仍被占用。绑定的宿主数据不随容器删除。
 
 容器带有项目路径、随机会话 ID 等标签。清理前核对所有权，避免同名容器或其他启动器的实例被误删。浏览器按网关不可变 ID 加入网络，避免容器名称被替换后误连到另一实例。
 
-`./status` 显示各容器状态。网关意外消失时，应用容器可能仍然存在，但内核默认拒绝防火墙继续限制它们；状态命令会标注网关不可用。恢复方式是 `./stop` 后重新 `./start`，不是给客户端换到其他网络。
+`./cage status` 显示各容器状态。网关意外消失时，应用容器可能仍然存在，但内核默认拒绝防火墙继续限制它们；状态命令会标注网关不可用。恢复方式是 `./cage down` 后重新 `./cage up`，不是给客户端换到其他网络。
 
-`./claude` 校验实例所有权与网关 ID，然后 `docker exec` 到已运行的 Claude 容器执行 CLI。执行用户取容器实际的 PUID/PGID，使用其实际环境和工作目录，不用后来修改的配置去猜运行时身份。交互终端使用 `-it`，非交互 `-p` 场景只使用 `-i`；参数原样传给 Claude。退出对话只退出这次 exec，不停止容器。
+`./cage claude` 校验实例所有权与网关 ID，然后 `docker exec` 到已运行的 Claude 容器执行 CLI。执行用户取容器实际的 PUID/PGID，使用其实际环境和工作目录，不用后来修改的配置去猜运行时身份。交互终端使用 `-it`，非交互 `-p` 场景只使用 `-i`；参数原样传给 Claude。退出对话只退出这次 exec，不停止容器。
 
-`./shell` 与 `./claude` 共用 `caged/host/enter.py` 的所有权、网关和身份校验，默认执行 Claude 容器内的 `bash -l`；也可选择 browser 或 network。network 使用其已有的 `sh`。`--root` 只改变此次容器内 exec 的 UID/GID、HOME 和用户环境，普通应用仍以 `claude-user` 运行。分隔符 `--` 后的命令按参数数组传给 Docker，不经过宿主 Shell 二次展开。
+`./cage shell` 与 `./cage claude` 共用 `caged/host/enter.py` 的所有权、网关和身份校验，默认执行 Claude 容器内的 `bash -l`；也可选择 browser 或 network。network 使用其已有的 `sh`。`--root` 只改变此次容器内 exec 的 UID/GID、HOME 和用户环境，普通应用仍以 `claude-user` 运行。分隔符 `--` 后的命令按参数数组传给 Docker，不经过宿主 Shell 二次展开。
 
 完整开发环境的持久化仍是后续生命周期调整，当前实现继续遵循本节的临时容器语义。拟议方案见 [有状态服务设计](stateful-service.md)。
 
@@ -262,7 +262,7 @@ IPv6 的输入、转发、输出也默认拒绝，仅允许回环。IPv4 输入�
 
 可选的 `workspace` 支持路径或路径列表，经过展开和规范化后，以相同绝对路径读写挂载到两个应用；首项是工作目录。设置缺省时不挂载任何 workspace，应用 HOME 都是 `/config`。不会递归修改 workspace 的属主，也不会隐式共享 Mac 主目录。镜像初始化、系统和网关私有目录不能被 workspace 覆盖。
 
-Claude 状态默认绑定 `<项目>/config/.claude` 到容器 `/config/.claude`，并设置 `CLAUDE_CONFIG_DIR=/config/.claude`。这使凭证 `.credentials.json`、设置、会话/记忆，以及平时单独存放的 `.claude.json` 全部落在同一个持久化绑定中。不会自动复制 Mac Keychain；用户首次通过 `./claude` 登录。
+Claude 状态默认绑定 `<项目>/config/.claude` 到容器 `/config/.claude`，并设置 `CLAUDE_CONFIG_DIR=/config/.claude`。这使凭证 `.credentials.json`、设置、会话/记忆，以及平时单独存放的 `.claude.json` 全部落在同一个持久化绑定中。不会自动复制 Mac Keychain；用户首次通过 `./cage claude` 登录。
 
 可选 `claude.config_dir` 只能指向本项目被忽略的 `config/` 下的子目录。状态目录权限为 `700`，必要的属主调整只限该专用目录。构建上下文使用白名单，私有配置和授权目录不会上传给镜像构建器。镜像的软件安装/拉取由 Docker 构建器完成，运行后的两个应用才使用共享网关的受控出口。
 
@@ -271,7 +271,7 @@ Claude 状态默认绑定 `<项目>/config/.claude` 到容器 `/config/.claude`�
 | 数据 | 保存位置 | 清理方式 |
 | --- | --- | --- |
 | 应用启动配置 | 项目 `config/app.yaml` | Git 忽略；会话结束后保留，修改后重启读取 |
-| Claude 授权、设置、会话与记忆 | 默认项目 `config/.claude` 绑定到容器 `/config/.claude` | `./stop` 或重建容器后保留，不会因 `--rm` 删除 |
+| Claude 授权、设置、会话与记忆 | 默认项目 `config/.claude` 绑定到容器 `/config/.claude` | `./cage down` 或重建容器后保留，不会因 `--rm` 删除 |
 | 明示 workspace 文件 | 原宿主绝对路径 | 两个应用访问同一份文件；宿主修改和容器修改互相可见 |
 | 代理配置快照 | 项目 `config/mihomo.yaml`，从 Mac 配置完整复制 | 权限 `600`、Git 忽略；会话结束后保留，不自动同步源文件 |
 | 选定节点参数 | 启动器内存，经标准输入传给网关 | 从项目快照读取，不额外写入其他项目文件、容器环境变量或镜像 |
@@ -282,7 +282,7 @@ Claude 状态默认绑定 `<项目>/config/.claude` 到容器 `/config/.claude`�
 
 浏览器本身的配置和缓存仍是临时的；只共享明示 workspace。Claude 额外持久化自己的状态目录。网关根文件系统只读，运行时写入限于 tmpfs。临时容器不表示运行期间完全没有磁盘写入，也不表示绑定文件会被自动删除。
 
-后台服务启动成功后独立于启动终端存在；通过对应实例的 `./status`、`./stop` 检查和结束。令牌有效期由 Claude 的认证机制管理，持久化文件不等于令牌永不过期。
+后台服务启动成功后独立于启动终端存在；通过对应实例的 `./cage status`、`./cage down` 检查和结束。令牌有效期由 Claude 的认证机制管理，持久化文件不等于令牌永不过期。
 
 ## 10. 11 项检查如何取证
 
@@ -310,10 +310,10 @@ Claude 状态默认绑定 `<项目>/config/.claude` 到容器 `/config/.claude`�
 
 | 命令 | 范围 |
 | --- | --- |
-| `./start test` | 配置优先级、校验和跨组件传递；本地可连通替身、隔离与代理删除测试、启动器和子进程生命周期；不使用真实节点凭证 |
-| `./start verify` | 真实节点的 HTTPS、DNS、UDP、物理接口及 IPv6 检查，再移除自己的网关验证断网 |
-| `./start smoke` | 启动真实 Chromium 和 Claude 服务，检查环境、DNS、出口与网页桌面入口，完成后清理 |
-| `./start audit --instance caged-audit --port 3003` | 新实例中的完整 11 项检查与故障演练，完成后清理 |
+| `./cage check test` | 配置优先级、校验和跨组件传递；本地可连通替身、隔离与代理删除测试、启动器和子进程生命周期；不使用真实节点凭证 |
+| `./cage check verify` | 真实节点的 HTTPS、DNS、UDP、物理接口及 IPv6 检查，再移除自己的网关验证断网 |
+| `./cage check smoke` | 启动真实 Chromium 和 Claude 服务，检查环境、DNS、出口与网页桌面入口，完成后清理 |
+| `./cage check audit --instance caged-audit --port 3003` | 新实例中的完整 11 项检查与故障演练，完成后清理 |
 
 ## 11. 当前实现的范围
 
@@ -333,11 +333,11 @@ Claude 状态默认绑定 `<项目>/config/.claude` 到容器 `/config/.claude`�
 
 | 文件或目录 | 对应实现 |
 | --- | --- |
-| [start](../start)、[stop](../stop)、[status](../status)、[claude](../claude)、[containers/launcher](../containers/launcher) | Shell 入口经 `run.sh` 在 launcher 容器（或 `CAGED_NATIVE=1` 时在宿主）运行宿主 Python 包，保留调用者工作目录 |
+| [cage](../cage)、[caged/host/main.py](../caged/host/main.py)、[containers/launcher](../containers/launcher) | 唯一的 sh 入口；`help`/`init` 由 shell 完成，其余子命令在 launcher 容器（或 `CAGED_NATIVE=1` 时在宿主）分派到宿主 Python 包，保留调用者工作目录 |
 | [caged/host/cli.py](../caged/host/cli.py)、[session.py](../caged/host/session.py) | 命令分派、启动检查、后台会话与失败回滚 |
 | [caged/host/instance.py](../caged/host/instance.py)、[docker.py](../caged/host/docker.py)、[images.py](../caged/host/images.py) | 独立实例名称、Docker 所有权与清理、实际构建输入及镜像哈希 |
 | [caged/host/config.py](../caged/host/config.py)、[proxy.py](../caged/host/proxy.py)、[yamlfile.py](../caged/host/yamlfile.py) | 配置优先级与校验、安全 YAML 加载、节点选择和地址固定 |
-| [shell](../shell)、[caged/host/shell.py](../caged/host/shell.py)、[enter.py](../caged/host/enter.py)、[claude.py](../caged/host/claude.py) | 共用身份与所有权检查，进入容器 Shell 或 Claude CLI |
+| [caged/host/shell.py](../caged/host/shell.py)、[enter.py](../caged/host/enter.py)、[claude.py](../caged/host/claude.py)、[logs.py](../caged/host/logs.py) | 共用身份与所有权检查，进入容器 Shell、Claude CLI 或查看日志 |
 | [caged/host/audit.py](../caged/host/audit.py) | 11 项取证编排 |
 | [caged/runtime/network/main.py](../caged/runtime/network/main.py)、[mihomo.py](../caged/runtime/network/mihomo.py)、[firewall.py](../caged/runtime/network/firewall.py) | 网关生命周期、全局代理与 DNS 配置、防火墙 |
 | [caged/runtime/network/monitor.py](../caged/runtime/network/monitor.py)、[lease.py](../caged/runtime/network/lease.py) | 持续检查、限时许可、退避恢复与人工暂停 |
