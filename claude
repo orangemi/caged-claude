@@ -1,6 +1,2 @@
 #!/bin/sh
-set -eu
-export PYTHONDONTWRITEBYTECODE=1
-caged_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-export PYTHONPATH="$caged_root${PYTHONPATH:+:$PYTHONPATH}"
-exec python3 -c "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); module=sys.argv.pop(1); sys.argv[0]=module; runpy.run_module(module,run_name='__main__')" "$caged_root" caged.host.claude "$@"
+exec sh "$(dirname -- "$0")/containers/launcher/run.sh" caged.host.claude "$@"
