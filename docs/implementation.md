@@ -19,7 +19,7 @@
 
 ```mermaid
 flowchart TB
-    Local["Mac 本地浏览器"] -->|"访问控制页面"| Port["127.0.0.1:配置的 UI 端口 → 镜像端口 3001"]
+    Local["Mac 本地浏览器"] -->|"访问控制页面"| Port["127.0.0.1:配置的 UI 端口 → 镜像端口 3000（HTTP，默认）或 3001（HTTPS）"]
     subgraph NetNS["三个容器共享的 Linux 网络命名空间"]
         Chromium["浏览器容器：Chromium + 网页桌面"]
         Claude["Claude 容器：独立 CLI 与开发环境"]
@@ -223,7 +223,7 @@ IPv6 的输入、转发、输出也默认拒绝，仅允许回环。IPv4 输入�
 默认发布的 Docker 端口只有：
 
 ```text
-127.0.0.1:<ports.ui> → 共享网络空间中的 TCP 3001
+127.0.0.1:<ports.ui> → 共享网络空间中的 TCP 3000（browser.ui_scheme: http，默认）或 3001（https）
 ```
 
 网页桌面服务运行在浏览器容器，端口发布配置放在网络容器，因为端口属于共享网络空间。`--port` 修改的是 Mac 上的本地端口。

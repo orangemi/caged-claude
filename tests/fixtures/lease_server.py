@@ -11,7 +11,7 @@ class Datagram(socketserver.BaseRequestHandler):
 class UI(socketserver.BaseRequestHandler):
  def handle(self):
   self.request.recv(1024);self.request.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK')
-for kind,port,handler in [(socketserver.ThreadingTCPServer,18080,Echo),(socketserver.ThreadingUDPServer,18081,Datagram),(socketserver.ThreadingUDPServer,53,Datagram),(socketserver.ThreadingTCPServer,3001,UI)]:
+for kind,port,handler in [(socketserver.ThreadingTCPServer,18080,Echo),(socketserver.ThreadingUDPServer,18081,Datagram),(socketserver.ThreadingUDPServer,53,Datagram),(socketserver.ThreadingTCPServer,3000,UI)]:
  server=kind(('0.0.0.0',port),handler)
  threading.Thread(target=server.serve_forever,daemon=True).start()
 while True:time.sleep(1)

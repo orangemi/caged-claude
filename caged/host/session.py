@@ -11,7 +11,7 @@ from .config import runtime_policy
 from .errors import CageError
 from .instance import Instance
 from .paths import ROOT, LABEL, LAYOUT_LABEL, LAYOUT_VERSION, IN_LAUNCHER
-from caged.shared.policy import POLICY_ENV, BROWSER_HTTPS_PORT, APP_USER
+from caged.shared.policy import POLICY_ENV, APP_USER
 
 EMPTY_PROXY_ENV = [item for key in (
     'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
@@ -56,7 +56,7 @@ class Session:
                    '--cap-add', 'NET_ADMIN', '--device', '/dev/net/tun',
                    '--read-only', '--tmpfs', '/run/caged:rw,noexec,nosuid,size=32m',
                    '--tmpfs', '/tmp:rw,noexec,nosuid,size=16m',
-                   '--dns', '127.0.0.1', '-p', f'127.0.0.1:{self.args.port}:{BROWSER_HTTPS_PORT}',
+                   '--dns', '127.0.0.1', '-p', self.ui_publish(),
                    '-e', POLICY_ENV + '=' + json.dumps(self.policy), *EMPTY_PROXY_ENV, images.IMAGES['network']]
         payload = json.dumps({'proxy': selected_proxy, 'display_name': self.args.node,
                               'session': self.session_id, 'agents': self.agent_keys}) + '\n'
@@ -104,10 +104,10 @@ class Session:
         existing = status.get('policy')
         if not existing:
             raise CageError('Gateway has no resolved runtime policy. Restart its launcher with the updated code.')
-        for key in ('node', 'dns_upstream', 'controller_port', 'mixed_port'):
+        for key in ('node', 'dns_upstream', 'controller_port', 'mixed_port', 'browser_ui_port'):
             if existing[key] != self.policy[key]:
                 raise CageError('Existing gateway differs from the requested configuration: ' + key)
-        bindings = state.get('NetworkSettings', {}).get('Ports', {}).get(f'{BROWSER_HTTPS_PORT}/tcp') or []
+        bindings = state.get('NetworkSettings', {}).get('Ports', {}).get(f'{self.args.browser_ui_port}/tcp') or []
         local = [binding for binding in bindings if binding['HostIp'] == '127.0.0.1']
         if len(local) != 1:
             raise CageError('Network must publish its browser UI on exactly one IPv4 loopback port.')
@@ -304,10 +304,18 @@ class Session:
         # The launcher container cannot reach the host loopback port; there,
         # request the UI inside the gateway (use_network verified the publish).
         if IN_LAUNCHER:
-            return engine.docker('exec', self.network_container_id, 'curl', '--noproxy', '*', '-kfsSI',
-                                 '--max-time', '5', f'https://127.0.0.1:{BROWSER_HTTPS_PORT}/')
-        return engine.call(['curl', '--noproxy', '*', '-kfsSI', '--max-time', '5',
-                            f'https://127.0.0.1:{self.args.port}/'])
+            return engine.docker('exec', self.network_container_id, *self.ui_request(self.args.browser_ui_port))
+        return engine.call(self.ui_request(self.args.port))
+
+    def ui_publish(self):
+        """The only published port: the browser UI, on host loopback."""
+        return f'127.0.0.1:{self.args.port}:{self.args.browser_ui_port}'
+
+    def ui_request(self, port):
+        # -k only for https: the desktop image's certificate is self-signed.
+        insecure = ['-k'] if self.args.ui_scheme == 'https' else []
+        return ['curl', '--noproxy', '*', *insecure, '-fsSI', '--max-time', '5',
+                f'{self.args.ui_scheme}://127.0.0.1:{port}/']
 
     def start_browser(self):
         images.build('browser')

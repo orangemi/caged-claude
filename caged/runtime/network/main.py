@@ -48,7 +48,7 @@ def main():
     initialize()
     (ROOT / 'probe-mark').write_text(str(PROBE_MARK))
     command(['iptables-restore', '-w', '5'],
-            data=firewall_rules(address, proxy['port'], options.get('host_bridge_tcp')))
+            data=firewall_rules(address, proxy['port'], options.get('host_bridge_tcp'), options['browser_ui_port']))
     command(['ip6tables-restore', '-w', '5'], data='''*filter
 :INPUT DROP [0:0]
 :FORWARD DROP [0:0]
