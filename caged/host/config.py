@@ -5,11 +5,11 @@ import json
 import os
 from pathlib import Path
 import re
-import subprocess
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .paths import ROOT, YAML_READER
+from . import yamlfile
+from .paths import ROOT
 DEFAULT_SETTINGS = ROOT / 'config' / 'app.yaml'
 PREFIX = 'CAGED_BROWSER_'
 # Optional operational defaults; node, timezone and policy choices stay explicit.
@@ -74,11 +74,16 @@ class ConfigError(ValueError):
 
 
 def read_yaml(path):
-    result = subprocess.run(['ruby', str(YAML_READER), str(path), 'read'],
-                            text=True, capture_output=True)
-    if result.returncode:
-        raise ConfigError(f'Cannot read configuration {path}. Copy config.example/app.yaml to config/app.yaml and check the YAML.')
-    return json.loads(result.stdout)
+    try:
+        data = yamlfile.load(path)
+        # Round-trip through JSON so only JSON-compatible values (no dates) pass.
+        return json.loads(json.dumps(data))
+    except yamlfile.YamlError as error:
+        if str(error) != 'unreadable':
+            raise ConfigError(str(error)) from None
+    except (TypeError, ValueError):
+        pass
+    raise ConfigError(f'Cannot read configuration {path}. Copy config.example/app.yaml to config/app.yaml and check the YAML.')
 
 
 def lookup(data, dotted):
@@ -179,9 +184,14 @@ def resolve(argv=None, environ=None):
         raise ConfigError('Monitor lease must cover interval + probe_timeout + two ticks; interval must cover a tick')
     if args.monitor_retry_max < args.monitor_retry_initial:
         raise ConfigError('Monitor retry_max must cover retry_initial')
-    for name, getter in (('puid', os.getuid), ('pgid', os.getgid)):
+    # The launcher container may run as root; the wrapper passes the caller's identity.
+    for name, variable, getter in (('puid', 'CAGED_HOST_UID', os.getuid), ('pgid', 'CAGED_HOST_GID', os.getgid)):
         value = getattr(args, name)
-        setattr(args, name, getter() if value == 'host' else integer(value, name, 0, 2147483647))
+        if value == 'host':
+            value = integer(env[variable], variable, 0, 2147483647) if variable in env else getter()
+        else:
+            value = integer(value, name, 0, 2147483647)
+        setattr(args, name, value)
     if not re.fullmatch(r'[1-9][0-9]*[kKmMgG]', args.shm_size):
         raise ConfigError('shm_size must be a positive size such as 512m or 1g')
     if not isinstance(args.proxy_file_path, (str, Path)) or not str(args.proxy_file_path).strip():

@@ -189,6 +189,35 @@ class Settings(unittest.TestCase):
                 for value in (f'PUID={uid}', f'PGID={gid}', 'USER=claude-user', 'LOGNAME=claude-user'):
                     self.assertIn(value, command)
 
+    def test_launcher_passes_the_callers_identity_through_the_environment(self):
+        with patch('caged.host.config.os.getuid', return_value=0), patch('caged.host.config.os.getgid', return_value=0):
+            args = self.parse(env={'CAGED_HOST_UID': '501', 'CAGED_HOST_GID': '20'})
+            self.assertEqual((args.puid, args.pgid), (501, 20))
+            self.assertEqual(self.parse('--puid', '1000', env={'CAGED_HOST_UID': '501'}).puid, 1000)
+            with self.assertRaises(ConfigError):
+                self.parse(env={'CAGED_HOST_UID': 'nobody'})
+
+    def test_node_file_is_listed_and_selected_without_ruby(self):
+        nodes = self.folder / 'nodes.yaml'
+        nodes.write_text('base: &base {type: anytls, udp: true}\n'
+                         'proxies:\n'
+                         '  - {<<: *base, name: alias-node, server: 203.0.113.5, port: 443}\n'
+                         '  - {name: vmess-node, type: vmess}\n'
+                         '  - {name: chained, type: anytls, dialer-proxy: other}\n')
+        self.assertEqual(proxy.load_node(nodes), [
+            {'name': 'alias-node', 'type': 'anytls', 'udp': True},
+            {'name': 'vmess-node', 'type': 'vmess', 'udp': None},
+            {'name': 'chained', 'type': 'anytls', 'udp': None}])
+        self.assertEqual(proxy.load_node(nodes, 'alias-node')['server'], '203.0.113.5')
+        for name, message in (('missing', 'not found'), ('vmess-node', 'AnyTLS'), ('chained', 'chained')):
+            with self.assertRaisesRegex(engine.CageError, message):
+                proxy.load_node(nodes, name)
+        nodes.write_text('proxies: [unclosed\n')
+        with self.assertRaisesRegex(engine.CageError, 'No configuration contents were printed'):
+            proxy.load_node(nodes)
+        with self.assertRaisesRegex(engine.CageError, 'No configuration contents were printed'):
+            proxy.load_node(self.folder / 'absent.yaml')
+
     def test_explicit_identity_can_override_host_defaults_per_field(self):
         self.data['browser'].update(puid=1000, pgid=1000)
         self.write()

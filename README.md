@@ -13,7 +13,15 @@ Chromium / Claude Code（各自独立容器，共享网络命名空间）
 
 ## 启动
 
-依赖：macOS、OrbStack、Docker CLI、Python 3.9+、Ruby（macOS 自带）。
+依赖：Docker（OrbStack、Docker Desktop 或 Linux Docker Engine）和 POSIX `sh`。宿主机不需要 Python 或 Ruby。
+
+所有入口脚本经 [containers/launcher/run.sh](containers/launcher/run.sh) 在一个 launcher 容器中运行 Python 启动器：挂载 Docker socket，项目目录按原路径读写挂载，`$HOME` 与当前目录只读挂载，用于读取配置和校验 workspace。首次运行会自动构建 launcher 镜像（只含依赖，代码直接挂载，改代码无须重建）。
+
+| 环境变量 | 作用 |
+| --- | --- |
+| `CAGED_MOUNTS` | 冒号分隔的额外只读目录，用于 `$HOME` 之外的 workspace 或配置文件 |
+| `CAGED_DOCKER_SOCK` | 指定 Docker socket；默认 `/var/run/docker.sock`，Linux 上会使用 `unix://` 形式的 `DOCKER_HOST` |
+| `CAGED_NATIVE=1` | 不用容器，直接用宿主机的 Python 3.9+ 运行（需要 PyYAML） |
 
 ```bash
 cd ~/Projects/caged-browser

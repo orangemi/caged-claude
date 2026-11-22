@@ -60,6 +60,7 @@ class Layout(unittest.TestCase):
             (caller / 'caged/__init__.py').write_text('raise RuntimeError("wrong package")')
             (caller / 'nodes.yaml').write_text('proxies:\n  - name: from-caller\n    type: anytls\n    udp: true\n')
             env = {key: value for key, value in os.environ.items() if not key.startswith('CAGED_BROWSER_')}
+            env['CAGED_NATIVE'] = '1'  # exercise the Python entry point, not the launcher container
             result = subprocess.run([str(ROOT / 'start'), 'nodes', '--settings', str(ROOT / 'config.example/app.yaml'),
                                      '--config', 'nodes.yaml', '--workspace', '.'],
                                     cwd=caller, env=env, text=True, capture_output=True, timeout=10)
@@ -77,6 +78,7 @@ class Layout(unittest.TestCase):
             caller.mkdir()
             (caller / 'mihomo.yaml').write_text('proxies:\n  - name: wrong-directory\n    type: anytls\n')
             env = {key: value for key, value in os.environ.items() if not key.startswith('CAGED_BROWSER_')}
+            env['CAGED_NATIVE'] = '1'  # exercise the Python entry point, not the launcher container
             result = subprocess.run([str(ROOT / 'start'), 'nodes', '--settings', str(settings / 'app.yaml')],
                                     cwd=caller, env=env, text=True, capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)

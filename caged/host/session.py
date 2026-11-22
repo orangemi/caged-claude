@@ -10,7 +10,7 @@ from . import docker as engine, images, proxy
 from .config import runtime_policy
 from .errors import CageError
 from .instance import Instance
-from .paths import ROOT, LABEL, LAYOUT_LABEL, LAYOUT_VERSION
+from .paths import ROOT, LABEL, LAYOUT_LABEL, LAYOUT_VERSION, IN_LAUNCHER
 from caged.shared.policy import POLICY_ENV, BROWSER_HTTPS_PORT, APP_USER
 
 EMPTY_PROXY_ENV = [item for key in (
@@ -38,11 +38,14 @@ class Session:
         engine.ensure_names_available(self.instance.names)
         source = proxy.load_node(self.args.proxy_file_path, self.args.node)
         selected_proxy = proxy.pin_node(source)
-        with socket.socket() as server:
-            try:
-                server.bind(('127.0.0.1', self.args.port))
-            except OSError:
-                raise CageError(f'Local port {self.args.port} is already in use; select another with --port.')
+        # Inside the launcher this would probe the container's own loopback;
+        # there docker run reports a busy host port itself.
+        if not IN_LAUNCHER:
+            with socket.socket() as server:
+                try:
+                    server.bind(('127.0.0.1', self.args.port))
+                except OSError:
+                    raise CageError(f'Local port {self.args.port} is already in use; select another with --port.')
         images.build('network')
         command = ['docker', 'run', '--rm', '-i', '--name', self.instance.network,
                    *self.managed_labels(),
@@ -228,8 +231,7 @@ class Session:
             result = self.exec_probe(self.instance.network, 'caged.runtime.checks.browser', *(['settings'] if settings_only else []), check=False, timeout=60)
             if result.returncode == 0:
                 print('Browser check: ' + result.stdout.strip(), flush=True)
-                page = engine.call(['curl', '--noproxy', '*', '-kfsSI', '--max-time', '5',
-                             f'https://127.0.0.1:{self.args.port}/'])
+                page = self.fetch_ui_head()
                 print('Remote browser UI: ' + page.stdout.splitlines()[0], flush=True)
                 return json.loads(result.stdout)
             last_error = (result.stdout or result.stderr).strip()
@@ -241,6 +243,15 @@ class Session:
                 break
             time.sleep(1)
         raise CageError('Actual Chromium check failed: ' + last_error)
+
+    def fetch_ui_head(self):
+        # The launcher container cannot reach the host loopback port; there,
+        # request the UI inside the gateway (use_network verified the publish).
+        if IN_LAUNCHER:
+            return engine.docker('exec', self.network_container_id, 'curl', '--noproxy', '*', '-kfsSI',
+                                 '--max-time', '5', f'https://127.0.0.1:{BROWSER_HTTPS_PORT}/')
+        return engine.call(['curl', '--noproxy', '*', '-kfsSI', '--max-time', '5',
+                            f'https://127.0.0.1:{self.args.port}/'])
 
     def start_browser(self):
         images.build('browser')

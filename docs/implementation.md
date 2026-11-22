@@ -64,7 +64,7 @@ browser 和 claude 启动时都使用：
 
 每个字段再按“命令行参数 > 对应的 `CAGED_BROWSER_*` 环境变量 > 应用 YAML > 内置默认值”独立解析。节点文件默认 `mihomo.yaml`，实例名默认 `caged-browser`；这些与常规 DoH、locale、语言、UID/GID、共享内存和端口默认值集中保存在 `caged/host/config.py` 的 `DEFAULTS`。实际配置可以省略这些项，`config.example/app.yaml` 将所有可选项注释并注明默认值。节点与时区没有内置地区偏好。
 
-browser 与 claude 的应用用户名固定为 `claude-user`。UID/GID 默认值为 `host`，在每次解析时调用 `os.getuid()` / `os.getgid()`，显式整数按同样的配置优先级覆盖。镜像构建不依赖某一台 Mac 的数字身份。浏览器派生镜像在构建时重命名上游账号，并同步适配其 s6 服务与桌面默认脚本中的账号引用，保留原有的运行时 PUID/PGID 重映射；Claude 启动脚本调整同名账号。运行策略和签名环境探针也核对固定用户名及实际 UID/GID。
+browser 与 claude 的应用用户名固定为 `claude-user`。UID/GID 默认值为 `host`，在每次解析时取启动者身份：launcher 容器内使用入口脚本传入的 `CAGED_HOST_UID` / `CAGED_HOST_GID`，宿主直接运行时调用 `os.getuid()` / `os.getgid()`，显式整数按同样的配置优先级覆盖。镜像构建不依赖某一台 Mac 的数字身份。浏览器派生镜像在构建时重命名上游账号，并同步适配其 s6 服务与桌面默认脚本中的账号引用，保留原有的运行时 PUID/PGID 重映射；Claude 启动脚本调整同名账号。运行策略和签名环境探针也核对固定用户名及实际 UID/GID。
 
 只有最终生效的值进入类型与范围校验，低优先级中被覆盖的无效值不会错误地阻止启动。无默认值的选项缺失、键名拼错或生效值非法时，在创建容器前失败；显式填写无效值不会被默认值掩盖。
 
@@ -104,7 +104,7 @@ config/mihomo.yaml   # 默认的节点文件，可通过 proxy.file_path 更换
 
 `--settings` 可以指定其他应用文件，`--proxy-file-path` 可以指定其他节点文件。省略节点文件设置时，默认寻找所选应用 YAML 同目录的 `mihomo.yaml`。更新 Mac 配置不会自动改动项目快照，需要重新复制。
 
-Ruby 辅助脚本使用安全 YAML 加载读取 `proxies`，按解析后的 `node` 精确选择节点。`nodes` 列出所有地区，不再按新加坡名称过滤。容器拿到的是该节点的一次配置快照，不是 Mac Clash 的 HTTP/SOCKS 监听地址。
+宿主程序用 PyYAML `safe_load` 读取 `proxies`，按解析后的 `node` 精确选择节点。`nodes` 列出所有地区，不再按新加坡名称过滤。容器拿到的是该节点的一次配置快照，不是 Mac Clash 的 HTTP/SOCKS 监听地址。
 
 容器里的配置由程序重新生成，关键部分是：
 
@@ -333,10 +333,10 @@ Claude 状态默认绑定 `<项目>/config/.claude` 到容器 `/config/.claude`�
 
 | 文件或目录 | 对应实现 |
 | --- | --- |
-| [start](../start)、[stop](../stop)、[status](../status)、[claude](../claude) | 四个 Shell 入口，保留调用者工作目录并进入宿主 Python 包 |
+| [start](../start)、[stop](../stop)、[status](../status)、[claude](../claude)、[containers/launcher](../containers/launcher) | Shell 入口经 `run.sh` 在 launcher 容器（或 `CAGED_NATIVE=1` 时在宿主）运行宿主 Python 包，保留调用者工作目录 |
 | [caged/host/cli.py](../caged/host/cli.py)、[session.py](../caged/host/session.py) | 命令分派、启动检查、后台会话与失败回滚 |
 | [caged/host/instance.py](../caged/host/instance.py)、[docker.py](../caged/host/docker.py)、[images.py](../caged/host/images.py) | 独立实例名称、Docker 所有权与清理、实际构建输入及镜像哈希 |
-| [caged/host/config.py](../caged/host/config.py)、[proxy.py](../caged/host/proxy.py)、[load_config.rb](../caged/host/load_config.rb) | 配置优先级与校验、安全 YAML 加载、节点选择和地址固定 |
+| [caged/host/config.py](../caged/host/config.py)、[proxy.py](../caged/host/proxy.py)、[yamlfile.py](../caged/host/yamlfile.py) | 配置优先级与校验、安全 YAML 加载、节点选择和地址固定 |
 | [shell](../shell)、[caged/host/shell.py](../caged/host/shell.py)、[enter.py](../caged/host/enter.py)、[claude.py](../caged/host/claude.py) | 共用身份与所有权检查，进入容器 Shell 或 Claude CLI |
 | [caged/host/audit.py](../caged/host/audit.py) | 11 项取证编排 |
 | [caged/runtime/network/main.py](../caged/runtime/network/main.py)、[mihomo.py](../caged/runtime/network/mihomo.py)、[firewall.py](../caged/runtime/network/firewall.py) | 网关生命周期、全局代理与 DNS 配置、防火墙 |
