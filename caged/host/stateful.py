@@ -88,7 +88,7 @@ class InstanceState:
         # Never registered and never marked: system/ and home/ can only be what
         # an interrupted seed moved before writing the marker.
         unexpected = [entry.name for entry in self.root.iterdir()
-                      if entry.name not in (LOCK, 'browser', 'system', 'home', MARKER + '.tmp')
+                      if entry.name not in (LOCK, 'browser', 'bridge', 'system', 'home', MARKER + '.tmp')
                       and not entry.name.startswith(('.seed-', '.probe-'))] if self.root.is_dir() else []
         if unexpected:
             raise StateError(f'{self.root} has content but no state marker ({", ".join(sorted(unexpected))}); '

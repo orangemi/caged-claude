@@ -1,5 +1,6 @@
 """Resolve CLI > environment > YAML > defaults before creating containers."""
 import argparse
+import getpass
 import ipaddress
 import json
 import os
@@ -31,6 +32,9 @@ DEFAULTS = {
     'claude_config_dir': None,
     'claude_sudo': True,
     'state_dir': str(ROOT / 'state'),
+    'host_bridge': True,
+    'host_bridge_user': None,  # None: the user running ./cage (CAGED_HOST_USER)
+    'host_bridge_sshd': None,  # None: found on the host's PATH
     'browser_probe_port': 19981,
     'claude_probe_port': 19982,
     'monitor_tick': 5,
@@ -62,6 +66,9 @@ FIELDS = {
     'claude_config_dir': ('claude.config_dir', 'CLAUDE_CONFIG_DIR'),
     'claude_sudo': ('claude.sudo', 'CLAUDE_SUDO'),
     'state_dir': ('state.dir', 'STATE_DIR'),
+    'host_bridge': ('host_bridge.enabled', 'HOST_BRIDGE'),
+    'host_bridge_user': ('host_bridge.user', 'HOST_BRIDGE_USER'),
+    'host_bridge_sshd': ('host_bridge.sshd', 'HOST_BRIDGE_SSHD'),
     'browser_probe_port': ('ports.browser_probe', 'BROWSER_PROBE_PORT'),
     'claude_probe_port': ('ports.claude_probe', 'CLAUDE_PROBE_PORT'),
     'monitor_tick': ('monitor.tick', 'MONITOR_TICK'),
@@ -108,6 +115,16 @@ def integer(value, key, minimum, maximum):
     return value
 
 
+def boolean(value, key):
+    if isinstance(value, str) and value.strip().lower() in ('true', 'yes', 'on', '1'):
+        return True
+    if isinstance(value, str) and value.strip().lower() in ('false', 'no', 'off', '0'):
+        return False
+    if not isinstance(value, bool):
+        raise ConfigError(key + ' must be true or false')
+    return value
+
+
 def resolve(argv=None, environ=None):
     env = os.environ if environ is None else environ
     parser = argparse.ArgumentParser(description='Run browser and Claude containers behind a fail-closed proxy gateway.')
@@ -129,7 +146,7 @@ def resolve(argv=None, environ=None):
         allowed.setdefault(parts[0], set()).update(parts[1:])
     allowed['proxy'].add('config')  # Legacy YAML alias; file_path takes precedence.
     if not isinstance(data, dict) or set(data) - set(allowed):
-        raise ConfigError('Unknown application YAML section; supported: proxy, browser, ports, instance, workspace, claude, state, monitor')
+        raise ConfigError('Unknown application YAML section; supported: proxy, browser, ports, instance, workspace, claude, state, host_bridge, monitor')
     for section, keys in allowed.items():
         if keys and section in data and (not isinstance(data[section], dict) or set(data[section]) - keys):
             raise ConfigError('Unknown or invalid application configuration section: ' + section)
@@ -247,14 +264,15 @@ def resolve(argv=None, environ=None):
     if private_root not in state.parents or any(char in str(state) for char in (',', ':', '\n', '\r')):
         raise ConfigError('Claude state must be a subdirectory of the project config/ directory')
     args.claude_config_dir = state
-    value = args.claude_sudo
-    if isinstance(value, str) and value.strip().lower() in ('true', 'yes', 'on', '1'):
-        value = True
-    elif isinstance(value, str) and value.strip().lower() in ('false', 'no', 'off', '0'):
-        value = False
-    if not isinstance(value, bool):
-        raise ConfigError('claude.sudo must be true or false')
-    args.claude_sudo = value
+    args.claude_sudo = boolean(args.claude_sudo, 'claude.sudo')
+    args.host_bridge = boolean(args.host_bridge, 'host_bridge.enabled')
+    if args.host_bridge_user is None:
+        args.host_bridge_user = env.get('CAGED_HOST_USER') or getpass.getuser()
+    if not isinstance(args.host_bridge_user, str) or not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}', args.host_bridge_user):
+        raise ConfigError('host_bridge.user must be a user name')
+    if args.host_bridge_sshd is not None and (not isinstance(args.host_bridge_sshd, str)
+                                              or not args.host_bridge_sshd.startswith('/')):
+        raise ConfigError('host_bridge.sshd must be an absolute path')
     if not isinstance(args.state_dir, (str, Path)) or not str(args.state_dir).strip():
         raise ConfigError('state.dir must be a directory path')
     folder = Path(args.state_dir).expanduser()

@@ -307,7 +307,9 @@ class Settings(unittest.TestCase):
         self.assertIn('CAGED_SUDO=1',claude)
         self.assertEqual(set(session.expected_mounts('claude')),
                          {str(second),'/etc','/usr','/var','/opt','/srv','/root','/home/claude','/home/claude/.claude',
-                          '/caged-runtime/caged','/caged-runtime/entrypoint.sh'})
+                          '/caged-runtime/caged','/caged-runtime/entrypoint.sh','/run/caged-host'})
+        self.assertIn(f'type=bind,src={session.state.root / "bridge"},dst=/run/caged-host,readonly',claude)
+        self.assertIn('CAGED_HOST_USER='+args.host_bridge_user,claude)
         self.assertEqual(set(session.expected_mounts('browser')),{str(second),'/config'})
         for value in session.common_environment():
             self.assertIn(value,browser);self.assertIn(value,claude)
@@ -324,6 +326,27 @@ class Settings(unittest.TestCase):
         self.assertEqual(args.claude_config_dir,ROOT/'config'/'claude'/'caged-claude')
         self.assertEqual(self.parse('--instance','other').claude_config_dir,ROOT/'config'/'claude'/'other')
         self.assertEqual(args.state_dir,ROOT/'state')
+
+    def test_host_bridge_is_on_by_default_and_can_be_turned_off(self):
+        args=self.parse(env={'CAGED_HOST_USER':'alice'})
+        self.assertIs(args.host_bridge,True)
+        self.assertEqual(args.host_bridge_user,'alice')
+        self.assertIsNone(args.host_bridge_sshd)
+        self.data['host_bridge']={'enabled':False}
+        self.write()
+        args=self.parse()
+        self.assertIs(args.host_bridge,False)
+        session=Session(args)
+        session.network_container_id,session.network_session_id='fixture-id','fixture-session'
+        command=session.claude_command()
+        self.assertNotIn('/run/caged-host',' '.join(command))
+        self.assertFalse(any(item.startswith('CAGED_HOST_USER=') for item in command))
+        self.assertNotIn('/run/caged-host',session.expected_mounts('claude'))
+        self.assertIs(self.parse('--host-bridge','yes').host_bridge,True)
+        self.assertEqual(self.parse('--host-bridge-user','bob').host_bridge_user,'bob')
+        for flags in (('--host-bridge','maybe'),('--host-bridge-user','bad user'),('--host-bridge-sshd','sshd')):
+            with self.assertRaises(ConfigError,msg=flags):
+                self.parse(*flags)
 
     def test_state_directory_and_sudo_follow_the_usual_precedence(self):
         args=self.parse()

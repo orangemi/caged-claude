@@ -8,8 +8,8 @@ FROM docker.io/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d054
 ARG CLAUDE_CODE_VERSION=2.1.330
 ENV DEBIAN_FRONTEND=noninteractive PYTHONDONTWRITEBYTECODE=1
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates curl git gosu less locales-all procps \
-        python3 ripgrep sudo tar tzdata xz-utils \
+    && apt-get install -y --no-install-recommends bash ca-certificates curl git gosu less locales-all openssh-client \
+        procps python3 ripgrep rsync sudo tar tzdata xz-utils \
     && rm -rf /var/lib/apt/lists/*
 # Node.js from the official image built on the same Debian release.
 COPY --from=node /usr/local/bin/node /usr/local/bin/node

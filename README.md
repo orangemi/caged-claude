@@ -204,6 +204,25 @@ CLAUDE_CONFIG_DIR=/home/claude/.claude
 
 `claude.config_dir` 是可选项，只能指向本项目 `config/` 下的子目录。目录权限为 `700`，授权文件由 Claude 管理。删除或重建 `state/` 都不会动它；有效登录令牌可继续使用，令牌本身仍有有效期。`config/` 整体已被 Git 忽略，也被排除在镜像构建上下文之外。
 
+## 宿主桥：`ssh host`
+
+笼子里可以直接回到宿主机：
+
+```bash
+./cage shell
+ssh host                          # 宿主上的交互式 shell
+ssh host 'cd ~/proj && make'      # 一次性命令
+scp host:~/notes.txt .            # 读取宿主文件
+ssh -J host aws-box               # 由宿主连接只有宿主能到达的机器，例如公司内网
+```
+
+- **默认开启**，`host_bridge.enabled: false` 关闭。**开启时，笼子里的任何进程（包括 root 和 Claude）都能以你的身份在宿主上执行命令、读取你能读取的文件。**
+- 通道是一个只读挂载的 Unix socket，`state/<实例>/bridge/host.sock`，宿主那一端每个连接执行一次项目专用、非 root 的 `sshd -i`。不开放网络端口，不修改网关防火墙，也不碰系统的 SSH 服务。
+- 宿主上的命令使用**宿主自己的**网络、代理和凭证，与笼子的代理出口无关。
+- 宿主需要 `python3` 和 `sshd` 程序（不需要开启 SSH 服务）。缺少时 `./cage up` 只打印警告，笼子照常启动；`./cage status` 显示 `host bridge:` 的状态。
+- 旧环境需要先安装一次客户端：`./cage shell -- sh -c 'sudo apt-get update && sudo apt-get install -y openssh-client rsync'`。
+- Claude 执行命令时没有终端，所以它应使用 `ssh host '<命令>'` 这类一次性形式；交互式 shell 是给人在终端里用的。设计与安全边界见 [宿主桥设计](docs/host-bridge.md)。
+
 ## 有状态环境
 
 Claude 容器里所有会被修改的目录都实时保存在宿主 `state/<实例>/`（`state.dir` 可改到其他磁盘），容器本身随时可以丢弃：

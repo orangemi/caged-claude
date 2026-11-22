@@ -47,6 +47,57 @@ class Dispatch(unittest.TestCase):
             self.assertIn(word, result.stdout)
 
 
+class BridgeFlow(unittest.TestCase):
+    """./cage up/down return from the launcher and act on its host bridge plan."""
+
+    def run_cage(self, subcommand, plan_action, launcher_status=0):
+        import os, socket, tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory(prefix='cg') as temporary:
+            folder = Path(temporary)
+            calls = folder / 'calls'
+            (folder / 'docker').write_text(f"""#!/bin/sh
+case $1 in image|info|build) exit 0 ;; esac
+echo "docker $*" >> {calls}
+[ -n "${{CAGED_BRIDGE_PLAN:-}}" ] && printf '{{"action": "{plan_action}"}}\\n' > "$CAGED_BRIDGE_PLAN"
+exit {launcher_status}
+""")
+            (folder / 'python3').write_text(f'#!/bin/sh\necho "python3 $*" >> {calls}\n')
+            for name in ('docker', 'python3'):
+                (folder / name).chmod(0o755)
+            sock = socket.socket(socket.AF_UNIX)
+            sock.bind(str(folder / 'd.sock'))
+            env = {'PATH': f'{folder}:/usr/bin:/bin', 'HOME': str(folder), 'CAGED_DOCKER_SOCK': str(folder / 'd.sock')}
+            result = subprocess.run(['sh', str(ROOT / 'cage'), subcommand], env=env, cwd=folder,
+                                    capture_output=True, text=True, timeout=20, stdin=subprocess.DEVNULL)
+            sock.close()
+            lines = calls.read_text().splitlines() if calls.exists() else []
+            leftovers = list((ROOT / 'state' / '.plans').glob('plan.*'))
+            return result, lines, leftovers
+
+    def test_up_starts_the_listener_on_the_host_after_the_launcher(self):
+        result, calls, leftovers = self.run_cage('up', 'start')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(calls[0].startswith('docker run '))
+        self.assertIn('-e CAGED_BRIDGE_PLAN', calls[0])
+        self.assertIn('-e CAGED_HOST_USER', calls[0])
+        self.assertRegex(calls[1], r'^python3 .*/caged/host/bridge\.py start .*/state/\.plans/plan\.')
+        self.assertEqual(leftovers, [], 'plan files are removed')
+
+    def test_a_failed_up_leaves_the_bridge_alone_but_down_always_stops_it(self):
+        result, calls, _ = self.run_cage('up', 'start', launcher_status=3)
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(len(calls), 1)
+        result, calls, _ = self.run_cage('down', 'stop', launcher_status=1)
+        self.assertEqual(result.returncode, 1)
+        self.assertRegex(calls[1], r'^python3 .*/caged/host/bridge\.py stop ')
+
+    def test_other_commands_do_not_touch_the_bridge(self):
+        result, calls, _ = self.run_cage('status', 'start')
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn('CAGED_BRIDGE_PLAN', calls[0])
+
+
 class Logs(unittest.TestCase):
     def setUp(self):
         patcher = patch.object(logs, 'resolve', return_value=SimpleNamespace(instance='fixture'))

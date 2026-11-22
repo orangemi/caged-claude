@@ -4,7 +4,7 @@ import os
 import signal
 import subprocess
 import sys
-from . import docker as engine, images, proxy
+from . import docker as engine, hostbridge, images, proxy, stateful
 from .config import ConfigError, resolve
 from .errors import CageError
 from .instance import Instance
@@ -24,7 +24,7 @@ def warn_legacy():
               'Remove them with: docker rm -f ' + ' '.join(result.stdout.split()), file=sys.stderr)
 
 
-def show_status(instance):
+def show_status(instance, args=None):
     gateway = engine.inspect(instance.network)
     network_up = bool(gateway and gateway['State']['Running'])
     for name in instance.names:
@@ -41,6 +41,8 @@ def show_status(instance):
         if result.returncode == 0:
             observed = json.loads(result.stdout)
             print('network permit: ' + observed['state'] + '; remaining=' + str(observed['lease_remaining']) + 's; ' + observed['reason'])
+    if args is not None:
+        print('host bridge: ' + hostbridge.status(args, stateful.InstanceState(args.state_dir, args.instance)))
 
 
 def main(args):
@@ -74,10 +76,11 @@ def main(args):
         # The environment lives in state/<instance>/ on the host; flush it now
         # rather than whenever the kernel gets to it.
         os.sync()
+        hostbridge.write_plan(args, stateful.InstanceState(args.state_dir, args.instance), 'stop')
         return
     if args.action == 'status':
         warn_legacy()
-        show_status(instance)
+        show_status(instance, args)
         return
     if args.action in ('pause', 'resume'):
         current = engine.inspect(instance.network)
@@ -99,6 +102,8 @@ def main(args):
             session.start_clients()
             if args.action == 'start':
                 keep_running = True
+                # The listener runs on the host; ./cage starts it from this plan.
+                hostbridge.write_plan(args, session.state, 'start' if args.host_bridge else 'stop')
                 print(f'Started network, browser and Claude in daemon mode. Open https://localhost:{args.port}; use ./cage claude to enter Claude, ./cage down to stop.', flush=True)
     finally:
         if not keep_running:

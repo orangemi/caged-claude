@@ -339,6 +339,7 @@ Claude 凭证默认绑定 `<项目>/config/claude/<实例>` 到容器 `/home/cla
 | [caged/host/instance.py](../caged/host/instance.py)、[docker.py](../caged/host/docker.py)、[images.py](../caged/host/images.py) | 独立实例名称、Docker 所有权与清理、实际构建输入及镜像哈希 |
 | [caged/host/config.py](../caged/host/config.py)、[proxy.py](../caged/host/proxy.py)、[yamlfile.py](../caged/host/yamlfile.py) | 配置优先级与校验、安全 YAML 加载、节点选择和地址固定 |
 | [caged/host/shell.py](../caged/host/shell.py)、[enter.py](../caged/host/enter.py)、[claude.py](../caged/host/claude.py)、[logs.py](../caged/host/logs.py) | 共用身份与所有权检查，进入容器 Shell、Claude CLI 或查看日志 |
+| [caged/host/hostbridge.py](../caged/host/hostbridge.py)、[bridge.py](../caged/host/bridge.py)、[caged/runtime/hostpipe.py](../caged/runtime/hostpipe.py) | 宿主桥：launcher 侧的挂载与计划、宿主侧监听与按需启动的 `sshd -i`、容器侧的 socket 中转（见 [宿主桥设计](host-bridge.md)） |
 | [caged/host/audit.py](../caged/host/audit.py) | 11 项取证编排 |
 | [caged/runtime/network/main.py](../caged/runtime/network/main.py)、[mihomo.py](../caged/runtime/network/mihomo.py)、[firewall.py](../caged/runtime/network/firewall.py) | 网关生命周期、全局代理与 DNS 配置、防火墙 |
 | [caged/runtime/network/monitor.py](../caged/runtime/network/monitor.py)、[lease.py](../caged/runtime/network/lease.py) | 持续检查、限时许可、退避恢复与人工暂停 |

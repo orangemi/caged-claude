@@ -1,6 +1,6 @@
 # 宿主桥设计：从笼子里回到宿主机
 
-> 状态：设计方案，尚未实现。审批与审计不在本文范围内，以后与笼子内命令的审计一起单独设计（§8）。
+> 状态：阶段 1 已实现（§9）。审批与审计不在本文范围内，以后与笼子内命令的审计一起单独设计（§8）。
 
 ## 1. 场景
 
@@ -57,7 +57,7 @@ ssh host / scp / rsync
 
 ### 3.3 sshd：项目专用、非 root、按需启动
 
-不使用、也不修改系统的 SSH 服务，宿主只需要装有 `sshd` 程序。所有配置都放在 `config/host-bridge/`（`700`）：
+不使用、也不修改系统的 SSH 服务，宿主只需要装有 `sshd` 程序。所有配置都放在 `config/host-bridge/<实例>/`（`700`）：
 
 | 文件 | 用途 |
 | --- | --- |
@@ -88,7 +88,7 @@ PidFile none
 
 ### 3.4 容器侧客户端
 
-- **客户端密钥**：首次启用时生成 `ed25519` 密钥对。私钥放在容器 HOME 中的 `/home/claude/.ssh/caged_host_ed25519`，随 `state/` 持久化；公钥写入 `config/host-bridge/authorized_keys`。
+- **客户端密钥**：首次启用时，由宿主侧生成 `ed25519` 密钥对。私钥放在 `state/<实例>/bridge/client_ed25519`（`600`，你的用户所有），随这个目录以只读方式出现在容器的 `/run/caged-host/` 中。容器里的 `claude-user` 与你的 UID 相同，所以能读取它，但无法替换它。公钥写入 `config/host-bridge/<实例>/authorized_keys`。
 - **固定 host key**：宿主桥的 host key 公钥写入 `/run/caged-host/known_hosts`，容器在连接时校验，不会接受其他 host key。
 - **客户端配置**：entrypoint 每次启动时重写 `/etc/ssh/ssh_config.d/caged-host.conf`。不修改用户自己的 `~/.ssh/config`：
 
@@ -97,15 +97,25 @@ PidFile none
       HostName caged-host
       HostKeyAlias caged-host
       User <宿主用户名>
-      IdentityFile ~/.ssh/caged_host_ed25519
+      IdentityFile /run/caged-host/client_ed25519
       IdentitiesOnly yes
       UserKnownHostsFile /run/caged-host/known_hosts
       StrictHostKeyChecking yes
-      ProxyCommand python3 /caged-runtime/caged/runtime/hostpipe.py /run/caged-host/host.sock
+      ProxyCommand /usr/bin/python3 /caged-runtime/caged/runtime/hostpipe.py /run/caged-host/host.sock
   ```
 
 - `hostpipe.py` 位于只读的 `/caged-runtime` 中，只做一件事：在 socket 和标准输入输出之间双向转发字节。容器里不需要安装 `socat` 或 `nc`。
-- **需要 `openssh-client`**：新镜像会安装它。已经初始化好的状态（例如当前环境）里没有它，需要执行一次 `./cage shell -- sh -c 'sudo apt-get update && sudo apt-get install -y openssh-client'`。`./cage up` 检测到桥已开启但容器里没有 `ssh` 时，会打印这条命令作为提示。
+- **需要 `openssh-client` 和 `rsync`**：新镜像会安装它们。已经初始化好的状态（例如当前环境）里没有它们，需要执行一次 `./cage shell -- sh -c 'sudo apt-get update && sudo apt-get install -y openssh-client rsync'`。`./cage up` 检测到桥已开启但容器里缺少它们时，会打印这条命令作为提示。
+
+### 3.5 谁在什么时候做什么
+
+宿主监听进程必须运行在宿主上，而 launcher 在容器里，所以分工如下：
+
+1. `./cage up` 在 `state/.plans/` 下创建一个临时计划文件，通过 `CAGED_BRIDGE_PLAN` 传给 launcher；
+2. launcher 照常启动三个容器。启动成功后，它把桥的计划写进这个文件，包括动作（`start`，或者关闭时的 `stop`）、实例、用户和路径；
+3. launcher 退出后，`./cage` 用**宿主的** `python3` 执行 `caged/host/bridge.py <动作> <计划>`。这个程序只用标准库，不依赖 PyYAML，也不依赖 launcher 的其他模块。它负责生成密钥和配置，用 `sshd -t` 校验配置，然后转为后台进程，并在 socket 就绪后才返回；
+4. `./cage down` 停止容器后，同样执行 `bridge.py stop`，即使停止容器失败也照样执行；
+5. 桥启动失败只打印警告，不影响 `./cage up` 的结果。
 
 ## 4. 使用方式
 
