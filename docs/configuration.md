@@ -53,6 +53,8 @@ config/mihomo.yaml   # mihomo 节点和凭证
 | `claude.config_dir` | `CAGED_CLAUDE_CLAUDE_CONFIG_DIR` | `--claude-config-dir` |
 | `claude.sudo` | `CAGED_CLAUDE_CLAUDE_SUDO` | `--claude-sudo` |
 | `state.dir` | `CAGED_CLAUDE_STATE_DIR` | `--state-dir` |
+| `state.backend` | `CAGED_CLAUDE_STATE_BACKEND` | `--state-backend` |
+| `state.size` | `CAGED_CLAUDE_STATE_SIZE` | `--state-size` |
 | `ports.browser_probe` / `ports.claude_probe` | `CAGED_CLAUDE_BROWSER_PROBE_PORT` / `CAGED_CLAUDE_CLAUDE_PROBE_PORT` | `--browser-probe-port` / `--claude-probe-port` |
 | `monitor.tick` / `monitor.interval` | `CAGED_CLAUDE_MONITOR_TICK` / `CAGED_CLAUDE_MONITOR_INTERVAL` | `--monitor-tick` / `--monitor-interval` |
 | `monitor.lease` / `monitor.probe_timeout` | `CAGED_CLAUDE_MONITOR_LEASE` / `CAGED_CLAUDE_MONITOR_PROBE_TIMEOUT` | `--monitor-lease` / `--monitor-probe-timeout` |

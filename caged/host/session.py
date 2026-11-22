@@ -34,7 +34,7 @@ class Session:
         self.network_container_id = None
         self.network_session_id = None
         self.agent_keys = {role: secrets.token_hex(32) for role in ('browser', 'claude')}
-        self.state = stateful.InstanceState(args.state_dir, args.instance)
+        self.state = stateful.open_state(args)
 
     def start_network(self):
         engine.ensure_names_available(self.instance.names)
@@ -159,7 +159,7 @@ class Session:
                    '--network', 'container:' + self.network_container_id,
                    '--cap-drop', 'NET_RAW', '--shm-size=' + self.args.shm_size,
                    *self.common_environment(), *self.workspace_arguments(),
-                   '--mount', f'type=bind,src={self.state.browser},dst=/config',
+                   *self.state_arguments('browser'),
                    '-e', 'CHROME_CLI=' + flags, images.IMAGES['browser']]
 
     def managed_labels(self, client=False):
@@ -194,20 +194,28 @@ class Session:
             mounts[hostbridge.MOUNT] = str(hostbridge.bridge_dir(self.state))
         return mounts
 
+    def state_mounts(self, role):
+        return self.state.mounts(role, self.args.claude_config_dir) if role in ('browser', 'claude') else []
+
     def expected_mounts(self, role):
+        """Destination -> host path of every bind mount of a role's container."""
         mounts = {str(path): str(path) for path in self.args.workspace} if role in ('browser', 'claude') else {}
-        if role == 'browser':
-            mounts['/config'] = str(self.state.browser)
+        mounts.update({mount.destination: mount.source for mount in self.state_mounts(role) if not mount.volume})
         if role == 'claude':
-            mounts.update(self.state.claude_mounts(self.args.claude_config_dir))
             mounts.update(self.readonly_mounts())
         return mounts
 
+    def expected_volumes(self, role):
+        """Destination -> volume name of every volume mount (image state backend)."""
+        return {mount.destination: mount.source for mount in self.state_mounts(role) if mount.volume}
+
+    def state_arguments(self, role):
+        return [item for mount in self.state_mounts(role) for item in ('--mount', mount.argument())]
+
     def claude_state_arguments(self):
-        mounts = [item for destination, source in self.state.claude_mounts(self.args.claude_config_dir).items()
-                  for item in ('--mount', f'type=bind,src={source},dst={destination}')]
-        return mounts + [item for destination, source in self.readonly_mounts().items()
-                         for item in ('--mount', f'type=bind,src={source},dst={destination},readonly')]
+        return self.state_arguments('claude') + [
+            item for destination, source in self.readonly_mounts().items()
+            for item in ('--mount', f'type=bind,src={source},dst={destination},readonly')]
 
     def claude_command(self):
         # No --init: the image's PID 1 is caged/runtime/init.py (see its docstring).
@@ -220,9 +228,12 @@ class Session:
                    '-e', 'CAGED_HOST_BRIDGE=' + hostbridge.target(self.args)] if self.args.host_bridge else []),
                 images.IMAGES['claude']]
 
-    def prepare_claude_state(self):
+    def prepare_state(self):
+        """Credentials, the seeded environment and the browser profile, before either app starts."""
         stateful.adopt_legacy_credentials(self.args)
+        images.build('claude')  # also the image a new environment is seeded from
         self.state.ensure(images.IMAGES['claude'])
+        self.state.prepare_browser()
         if self.args.host_bridge:
             hostbridge.prepare(self.state)
 
@@ -230,7 +241,6 @@ class Session:
         if not self.network_running():
             raise CageError('Network is no longer running. Claude was not started.')
         images.build('claude')
-        self.prepare_claude_state()
         command = self.claude_command()
         if self.detached:
             command.insert(2, '-d')
@@ -321,7 +331,6 @@ class Session:
         images.build('browser')
         if not self.network_running():
             raise CageError('Network is no longer running. Browser was not started.')
-        self.state.prepare_browser()
         command = self.browser_command()
         if self.detached:
             command.insert(2, '-d')
@@ -360,6 +369,7 @@ class Session:
         raise CageError('Network checks did not authorize outbound traffic: ' + last.get('reason', 'unavailable'))
 
     def start_clients(self):
+        self.prepare_state()
         self.start_browser()
         self.start_claude()
         self.wait_gate_open()
@@ -386,6 +396,10 @@ class Session:
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait()
+        try:
+            self.state.release()  # a no-op while another launcher's containers use the state
+        except Exception as error:
+            print(f'Cleanup notice for the environment storage: {error}', file=sys.stderr)
 
     def wait_ready(self, timeout=50):
         process, session_id = self.gateway_process, self.session_id

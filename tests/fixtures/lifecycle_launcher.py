@@ -10,7 +10,7 @@ Session.check_browser=lambda self,**kwargs:{'country':'SG','ip':'203.0.113.2'}
 Session.wait_gate_open=lambda self:{}
 Session.enroll_agent=lambda *args:None
 # Stand-in applications run the network image, so no environment is seeded or mounted.
-Session.prepare_claude_state=lambda self:self.args.claude_config_dir.mkdir(parents=True,exist_ok=True)
+Session.prepare_state=lambda self:(self.args.claude_config_dir.mkdir(parents=True,exist_ok=True),self.state.prepare_browser())
 Session.claude_state_arguments=lambda self:[]
 def check_claude(self,**kwargs):
  if os.environ.get('CAGED_TEST_FAIL_CLAUDE'):raise CageError('injected Claude readiness failure')

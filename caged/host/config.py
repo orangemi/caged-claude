@@ -35,6 +35,8 @@ DEFAULTS = {
     'claude_config_dir': None,
     'claude_sudo': True,
     'state_dir': str(ROOT / 'state'),
+    'state_backend': 'auto',  # image on macOS (no Linux ownership on host folders), dir elsewhere
+    'state_size': '64g',  # image backend: apparent size of a new, sparse image
     'host_bridge': True,
     'host_bridge_user': None,  # None: the user running ./cage (CAGED_HOST_USER)
     'host_bridge_sshd': None,  # None: found on the host's PATH
@@ -73,6 +75,8 @@ FIELDS = {
     'claude_config_dir': ('claude.config_dir', 'CLAUDE_CONFIG_DIR'),
     'claude_sudo': ('claude.sudo', 'CLAUDE_SUDO'),
     'state_dir': ('state.dir', 'STATE_DIR'),
+    'state_backend': ('state.backend', 'STATE_BACKEND'),
+    'state_size': ('state.size', 'STATE_SIZE'),
     'host_bridge': ('host_bridge.enabled', 'HOST_BRIDGE'),
     'host_bridge_user': ('host_bridge.user', 'HOST_BRIDGE_USER'),
     'host_bridge_sshd': ('host_bridge.sshd', 'HOST_BRIDGE_SSHD'),
@@ -312,6 +316,18 @@ def resolve(argv=None, environ=None):
     if any(char in str(folder) for char in (',', ':', '\n', '\r')):
         raise ConfigError('state.dir cannot contain comma, colon or newlines')
     args.state_dir = folder
+    if args.state_backend not in ('auto', 'dir', 'image'):
+        raise ConfigError('state.backend must be auto, dir or image')
+    # An explicit backend must match an existing environment's; auto adopts it.
+    args.state_backend_explicit = args.state_backend != 'auto'
+    if args.state_backend == 'auto':
+        # Host folders shared into Docker's VM on macOS drop Linux ownership.
+        args.state_backend = 'image' if env.get('CAGED_HOST_OS', os.uname().sysname) == 'Darwin' else 'dir'
+    size = str(args.state_size).strip()
+    match = re.fullmatch(r'([1-9][0-9]*)([gGtT])', size)
+    if not match or (match.group(2) in 'gG' and int(match.group(1)) < 8):
+        raise ConfigError('state.size must be at least 8g, such as 64g or 1t')
+    args.state_size = match.group(1) + match.group(2).upper()
     try:
         url = urlsplit(args.dns_upstream)
         address = ipaddress.ip_address(url.hostname or '')

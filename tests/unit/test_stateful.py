@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import patch
-from caged.host import stateful
+from caged.host import images, stateful
 from caged.host.errors import CageError
 
 
@@ -135,11 +135,208 @@ class StateDirectory(unittest.TestCase):
         self.assertIsNotNone(self.state.marker())
 
     def test_claude_mounts_cover_the_system_home_and_separate_credentials(self):
-        mounts = self.state.claude_mounts('/project/config/claude/fixture')
+        mounts = {mount.destination: mount for mount in self.state.mounts('claude', '/project/config/claude/fixture')}
         self.assertEqual(set(mounts), {'/etc', '/usr', '/var', '/opt', '/srv', '/root',
                                        '/home/claude', '/home/claude/.claude'})
-        self.assertEqual(mounts['/usr'], str(self.state.system / 'usr'))
-        self.assertEqual(mounts['/home/claude/.claude'], '/project/config/claude/fixture')
+        self.assertEqual(mounts['/usr'].argument(), f'type=bind,src={self.state.system / "usr"},dst=/usr')
+        self.assertEqual(mounts['/home/claude/.claude'].source, '/project/config/claude/fixture')
+        self.assertEqual([mount.argument() for mount in self.state.mounts('browser')],
+                         [f'type=bind,src={self.state.browser},dst=/config'])
+
+    def test_probe_failure_says_what_was_kept_and_points_macos_at_the_image_backend(self):
+        def docker(command, **kwargs):
+            raise CageError('kept owner:group:mode:links 0:0:4755:2 file')
+        with patch.object(stateful.engine, 'call', docker), patch.dict('os.environ', {'CAGED_HOST_OS': 'Darwin'}):
+            with self.assertRaisesRegex(stateful.StateError, '0:0:4755:2.*state.backend: image'):
+                self.state.ensure('fixture-image')
+
+
+class FakeImageDocker:
+    """Stands in for Docker, the storage helper and loop devices.
+
+    An image file holds only its filesystem UUID; the filesystem's content is
+    a directory keyed by that UUID, so it follows the file across renames."""
+
+    def __init__(self, base, users=(), seed_ok=True):
+        self.base, self.users, self.seed_ok = Path(base), list(users), seed_ok
+        self.volumes, self.loops, self.calls = {}, {}, []
+
+    def content(self, volume):
+        return self.base / 'filesystems' / Path(self.loops[self.volumes[volume]]).read_text()
+
+    def __call__(self, command, **kwargs):
+        self.calls.append(command)
+        environment = dict(command[index + 1].split('=', 1) for index, item in enumerate(command) if item == '-e')
+        args, stdout, code = command[1:], '', 0
+        if args[:2] == ['volume', 'inspect']:
+            code = 0 if args[2] in self.volumes else 1
+        elif args[:2] == ['volume', 'rm']:
+            self.volumes.pop(args[2])
+        elif args[:2] == ['volume', 'create']:
+            device = next(item for item in args if item.startswith('device='))[len('device='):]
+            self.volumes[args[-1]] = device
+        elif args[0] == 'ps':
+            stdout = '\n'.join(self.users)
+        elif images.IMAGES['storage'] in command:
+            script, disk = command[-1], environment['DISK']
+            if 'mkfs.ext4' in script:
+                Path(disk).write_text(environment['UUID'])
+                (self.base / 'filesystems' / environment['UUID']).mkdir(parents=True)
+            elif 'losetup -f' in script:
+                if Path(disk).read_text() != environment['UUID']:
+                    raise CageError(f'{disk} holds filesystem another, not this environment')
+                attached = [device for device, path in self.loops.items() if path == disk]
+                if not attached:
+                    attached = [f'/dev/loop{len(self.loops)}']
+                    self.loops[attached[0]] = disk
+                stdout = attached[0] + '\n'
+            elif 'losetup -d' in script:
+                self.loops = {device: path for device, path in self.loops.items() if path != disk}
+                if 'rm -f' in script:
+                    Path(disk).unlink()
+        else:  # seed or profile directory, in the volume
+            mount = command[command.index('--mount') + 1]
+            self.assert_volume_mount(mount)
+            root = self.content(mount.split(',')[1][4:])
+            if 'SEED' in environment:
+                for name in stateful.SYSTEM:
+                    (root / 'system' / name).mkdir(parents=True)
+                if not self.seed_ok:
+                    raise CageError('seed interrupted')
+                (root / 'home').mkdir()
+                (root / stateful.MARKER).write_text(environment['MARKER'])
+            if 'mkdir -p /state/browser' in command[-1]:
+                (root / 'browser').mkdir(exist_ok=True)
+        return SimpleNamespace(returncode=code, stdout=stdout, stderr='')
+
+    @staticmethod
+    def assert_volume_mount(mount):
+        if not mount.startswith('type=volume,src=fixture-state,dst=/state'):
+            raise AssertionError('seed must write through the volume: ' + mount)
+
+
+class ImageBackend(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        for target, value in ((stateful, 'REGISTRY'),):
+            patcher = patch.object(target, value, self.base / 'config' / 'instances')
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        build = patch.object(stateful.images, 'build', lambda *args, **kwargs: None)
+        build.start()
+        self.addCleanup(build.stop)
+        self.docker = FakeImageDocker(self.base)
+        self.state = stateful.ImageState(self.base / 'state', 'fixture', '64G')
+
+    def run_docker(self, method, *args, docker=None):
+        with patch.object(stateful.engine, 'call', docker or self.docker):
+            return getattr(self.state, method)(*args)
+
+    def test_first_start_creates_seeds_and_serves_the_image(self):
+        self.run_docker('ensure', 'fixture-image')
+        marker = self.state.marker()
+        self.assertEqual((marker['backend'], marker['instance']), ('image', 'fixture'))
+        self.assertEqual(self.state.disk.read_text(), marker['filesystem'])
+        self.assertFalse((self.state.root / 'disk.img.tmp').exists())
+        self.assertEqual(self.state.registered()['id'], marker['id'])
+        content = self.docker.content('fixture-state')
+        self.assertTrue((content / 'system' / 'usr').is_dir() and (content / 'home').is_dir())
+        self.assertTrue((content / 'browser').is_dir(), 'the browser profile lives in the image too')
+        self.assertEqual(list(self.docker.loops.values()), [str(self.state.disk)], 'one loop device, on disk.img')
+        helpers = [command for command in self.docker.calls if images.IMAGES['storage'] in command]
+        create = next(command for command in helpers if 'mkfs.ext4' in command[-1])
+        self.assertNotIn('--privileged', create, 'creating the file needs no privilege')
+        self.assertTrue(all('--privileged' in command for command in helpers if 'losetup' in command[-1]))
+        self.assertTrue(all('--network' in command and 'none' in command for command in helpers))
+        attach = next(command for command in helpers if 'losetup -f' in command[-1])
+        self.assertIn('--direct-io=on', attach[-1])
+        create = next(command for command in self.docker.calls if command[1:3] == ['volume', 'create'])
+        self.assertIn('o=discard', create, 'deleted files must shrink disk.img on the host')
+
+    def test_later_starts_reattach_without_reseeding_and_recreate_the_volume(self):
+        self.run_docker('ensure', 'fixture-image')
+        identity = self.state.marker()['id']
+        self.docker.volumes['fixture-state'] = '/dev/loop-stale'  # e.g. after the Docker VM restarted
+        self.docker.calls.clear()
+        self.run_docker('ensure', 'fixture-image')
+        self.assertEqual(self.state.marker()['id'], identity)
+        self.assertFalse(any('mkfs.ext4' in command[-1] or 'SEED' in ' '.join(command) for command in self.docker.calls))
+        self.assertEqual(self.docker.loops[self.docker.volumes['fixture-state']], str(self.state.disk))
+
+    def test_release_detaches_only_an_unused_volume(self):
+        self.run_docker('ensure', 'fixture-image')
+        self.docker.users = ['foreign']
+        self.run_docker('release')
+        self.assertIn('fixture-state', self.docker.volumes)
+        self.docker.users = []
+        self.run_docker('release')
+        self.assertEqual((self.docker.volumes, self.docker.loops), ({}, {}))
+        self.assertTrue(self.state.disk.is_file(), 'release never touches the data')
+        self.docker.calls.clear()
+        self.run_docker('release')
+        self.assertFalse(any(images.IMAGES['storage'] in command for command in self.docker.calls),
+                         'no volume, no privileged helper')
+
+    def test_a_volume_used_by_other_containers_is_not_replaced(self):
+        self.run_docker('ensure', 'fixture-image')
+        self.docker.users = ['foreign']
+        with self.assertRaisesRegex(stateful.StateError, 'in use'):
+            self.run_docker('ensure', 'fixture-image')
+
+    def test_a_swapped_or_missing_image_is_refused(self):
+        self.run_docker('ensure', 'fixture-image')
+        self.run_docker('release')
+        self.state.disk.write_text('another-filesystem')
+        with self.assertRaisesRegex(CageError, 'holds filesystem'):
+            self.run_docker('ensure', 'fixture-image')
+        self.state.disk.unlink()
+        with self.assertRaisesRegex(stateful.StateError, 'disk.img is missing'):
+            self.run_docker('ensure', 'fixture-image')
+
+    def test_an_interrupted_seed_leaves_only_a_temporary_file_that_is_retried(self):
+        with self.assertRaises(CageError):
+            self.run_docker('ensure', 'fixture-image', docker=FakeImageDocker(self.base, seed_ok=False))
+        self.assertIsNone(self.state.marker())
+        self.assertFalse(self.state.disk.exists())
+        self.assertTrue((self.state.root / 'disk.img.tmp').exists())
+        self.run_docker('ensure', 'fixture-image')
+        self.assertIsNotNone(self.state.marker())
+        self.assertFalse((self.state.root / 'disk.img.tmp').exists())
+
+    def test_an_unmarked_image_is_never_overwritten(self):
+        self.state.root.mkdir(parents=True)
+        self.state.disk.write_text('copied without its marker')
+        with self.assertRaisesRegex(stateful.StateError, 'no state marker \\(disk.img\\)'):
+            self.run_docker('ensure', 'fixture-image')
+        self.assertEqual(self.state.disk.read_text(), 'copied without its marker')
+
+    def test_mounts_are_volume_subpaths_and_credentials_stay_on_the_host(self):
+        mounts = {mount.destination: mount.argument() for mount in self.state.mounts('claude', '/project/config/claude/x')}
+        self.assertEqual(mounts['/usr'], 'type=volume,src=fixture-state,dst=/usr,volume-subpath=system/usr')
+        self.assertEqual(mounts['/home/claude'], 'type=volume,src=fixture-state,dst=/home/claude,volume-subpath=home')
+        self.assertEqual(mounts['/home/claude/.claude'], 'type=bind,src=/project/config/claude/x,dst=/home/claude/.claude')
+        self.assertEqual([mount.argument() for mount in self.state.mounts('browser')],
+                         ['type=volume,src=fixture-state,dst=/config,volume-subpath=browser'])
+
+
+class BackendChoice(unittest.TestCase):
+    def args(self, folder, backend='dir', explicit=False):
+        return SimpleNamespace(state_dir=folder, instance='fixture', state_backend=backend,
+                               state_backend_explicit=explicit, state_size='64G')
+
+    def test_an_existing_environment_keeps_its_backend(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            self.assertEqual(stateful.open_state(self.args(folder, 'image')).backend, 'image')
+            (folder / 'fixture').mkdir()
+            (folder / 'fixture' / stateful.MARKER).write_text(json.dumps({'backend': 'image'}))
+            self.assertEqual(stateful.open_state(self.args(folder, 'dir')).backend, 'image', 'auto adopts it')
+            with self.assertRaisesRegex(stateful.StateError, 'created with state.backend image'):
+                stateful.open_state(self.args(folder, 'dir', explicit=True))
+            (folder / 'fixture' / stateful.MARKER).write_text(json.dumps({'instance': 'fixture'}))
+            self.assertEqual(stateful.open_state(self.args(folder, 'image')).backend, 'dir', 'old markers are dir')
 
 
 class LegacyCredentials(unittest.TestCase):
