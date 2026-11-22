@@ -7,7 +7,7 @@ import sys
 import time
 import uuid
 from . import docker as engine, images, proxy, stateful
-from .config import DEFAULTS, runtime_policy
+from .config import runtime_policy
 from .errors import CageError
 from .instance import Instance
 from .paths import ROOT, LABEL, LAYOUT_LABEL, LAYOUT_VERSION, IN_LAUNCHER
@@ -209,7 +209,7 @@ class Session:
                 '-e', 'CAGED_SUDO=' + ('1' if self.args.claude_sudo else '0'), images.IMAGES['claude']]
 
     def prepare_claude_state(self):
-        stateful.adopt_legacy_credentials(self.args, DEFAULTS['instance'])
+        stateful.adopt_legacy_credentials(self.args)
         self.state.ensure(images.IMAGES['claude'])
 
     def start_claude(self):

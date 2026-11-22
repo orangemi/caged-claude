@@ -85,9 +85,11 @@ class InstanceState:
         if registered is not None:
             raise StateError(f'Environment storage for {self.instance} is unavailable: {self.root} has no state '
                              'marker. Reconnect the disk or fix state.dir; it will not be re-created over.')
+        # Never registered and never marked: system/ and home/ can only be what
+        # an interrupted seed moved before writing the marker.
         unexpected = [entry.name for entry in self.root.iterdir()
-                      if entry.name not in (LOCK, 'browser') and not entry.name.startswith(('.seed-', '.probe-'))] \
-            if self.root.is_dir() else []
+                      if entry.name not in (LOCK, 'browser', 'system', 'home', MARKER + '.tmp')
+                      and not entry.name.startswith(('.seed-', '.probe-'))] if self.root.is_dir() else []
         if unexpected:
             raise StateError(f'{self.root} has content but no state marker ({", ".join(sorted(unexpected))}); '
                              'refusing to seed over it.')
@@ -106,7 +108,10 @@ class InstanceState:
     def ensure(self, image):
         """Validate the state, seeding it from image on first use."""
         with self.locked():
-            if self.validate() is not None:
+            marker = self.validate()
+            if marker is not None:
+                if self.registered() is None:  # interrupted between marker and registry
+                    self._register(marker['id'])
                 return
             self._remove_leftovers(image)
             self._probe(image)
@@ -131,9 +136,12 @@ class InstanceState:
                            timeout=timeout)
 
     def _remove_leftovers(self, image):
-        if any(entry.name.startswith(('.seed-', '.probe-')) for entry in self.root.iterdir()):
+        # Only called for a never-marked, never-registered state (see validate).
+        if any(entry.name.startswith(('.seed-', '.probe-')) or entry.name in ('system', 'home', MARKER + '.tmp')
+               for entry in self.root.iterdir()):
             # Interrupted seeds hold root-owned files the launcher cannot delete.
-            self._run('rm -rf /state/.seed-* /state/.probe-*', image, timeout=300)
+            self._run(f'rm -rf /state/.seed-* /state/.probe-* /state/system /state/home /state/{MARKER}.tmp',
+                      image, timeout=300)
 
     def _probe(self, image):
         """Check that the host filesystem keeps ownership, setuid and links."""
@@ -157,25 +165,32 @@ rm -rf "$d"
 
     def _seed(self, image):
         seed_id = uuid.uuid4().hex
+        marker = {'instance': self.instance, 'id': seed_id, 'layout': LAYOUT, 'image': image,
+                  'created': time.strftime('%Y-%m-%dT%H:%M:%S%z')}
         excludes = ' '.join(f'--exclude=./{path}' for path in DOCKER_MANAGED)
+        # Everything runs as root inside the container: moving a root-owned
+        # directory needs write access to the directory itself (its "..").
+        # The marker is written last and handed to the launcher's own user.
         script = f'''set -e
 d=/state/.seed-$SEED
 mkdir -p "$d/system" "$d/home"
 cd / && tar --numeric-owner --xattrs {excludes} -cpf - {' '.join('./' + name for name in SYSTEM)} \\
     | tar -C "$d/system" --numeric-owner --xattrs -xpf -
 cd {HOME} && tar --numeric-owner --xattrs -cpf - . | tar -C "$d/home" --numeric-owner --xattrs -xpf -
-sync'''
+sync
+mv "$d/system" /state/system
+mv "$d/home" /state/home
+rmdir "$d"
+printf '%s\\n' "$MARKER" > /state/{MARKER}.tmp
+chown "$OWNER" /state/{MARKER}.tmp
+chmod 600 /state/{MARKER}.tmp
+sync
+mv /state/{MARKER}.tmp /state/{MARKER}'''
         print(f'Creating the persistent environment in {self.root} (first start only)...', flush=True)
-        self._run(script, image, SEED=seed_id)
-        staged = self.root / ('.seed-' + seed_id)
-        # Renames are atomic; the marker is written last, so an interrupted
-        # seed leaves only a .seed-* directory that the next start removes.
-        os.rename(staged / 'system', self.system)
-        os.rename(staged / 'home', self.home)
-        staged.rmdir()
-        marker = {'instance': self.instance, 'id': seed_id, 'layout': LAYOUT, 'image': image,
-                  'created': time.strftime('%Y-%m-%dT%H:%M:%S%z')}
-        write_private(self.root / MARKER, marker)
+        self._run(script, image, SEED=seed_id, MARKER=json.dumps(marker), OWNER=f'{os.getuid()}:{os.getgid()}')
+        self._register(seed_id)
+
+    def _register(self, seed_id):
         REGISTRY.mkdir(parents=True, exist_ok=True, mode=0o700)
         write_private(self.registry, {'state': str(self.root), 'id': seed_id})
 
@@ -191,11 +206,14 @@ def write_private(path, value):
     os.rename(temporary, path)
 
 
-def adopt_legacy_credentials(args, default_instance):
-    """Move the pre-stateful config/.claude to the default instance's directory."""
+def adopt_legacy_credentials(args):
+    """Move the pre-stateful config/.claude to the configured instance's directory.
+
+    Only an instance chosen by settings (file, env or default) adopts it, so
+    throwaway --instance runs such as audits and tests never take the login."""
     legacy = ROOT / 'config' / '.claude'
     target = Path(args.claude_config_dir)
-    if (args.sources.get('claude_config_dir') == 'default' and args.instance == default_instance
+    if (args.sources.get('claude_config_dir') == 'default' and args.sources.get('instance') != 'cli'
             and legacy.is_dir() and not target.exists()):
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.rename(legacy, target)

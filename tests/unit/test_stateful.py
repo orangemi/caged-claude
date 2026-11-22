@@ -23,19 +23,22 @@ class FakeDocker:
         if 'PROBE' in environment and not self.probe_ok:
             raise CageError('ownership was not kept')
         if 'SEED' in environment:
-            if not self.seed_ok:
-                (root / ('.seed-' + environment['SEED']) / 'system').mkdir(parents=True)
-                raise CageError('seed interrupted')
-            staged = root / ('.seed-' + environment['SEED'])
+            # The real script stages, moves system/ and home/ into place, then
+            # writes the marker last; an interruption can stop after any step.
             for name in stateful.SYSTEM:
-                (staged / 'system' / name).mkdir(parents=True)
-            (staged / 'system' / 'etc' / 'os-release').write_text('ID=debian\n')
-            (staged / 'home').mkdir()
-            (staged / 'home' / '.bashrc').write_text('# skel\n')
+                (root / 'system' / name).mkdir(parents=True)
+            if not self.seed_ok:
+                raise CageError('seed interrupted')
+            (root / 'system' / 'etc' / 'os-release').write_text('ID=debian\n')
+            (root / 'home').mkdir()
+            (root / 'home' / '.bashrc').write_text('# skel\n')
+            (root / stateful.MARKER).write_text(environment['MARKER'] + '\n')
+            (root / stateful.MARKER).chmod(0o600)
+            self.owner = environment['OWNER']
         if script.startswith('rm -rf'):
+            import shutil
             for entry in root.iterdir():
-                if entry.name.startswith(('.seed-', '.probe-')):
-                    import shutil
+                if entry.name.startswith(('.seed-', '.probe-')) or entry.name in ('system', 'home'):
                     shutil.rmtree(entry)
         return SimpleNamespace(returncode=0, stdout='', stderr='')
 
@@ -63,8 +66,9 @@ class StateDirectory(unittest.TestCase):
         self.assertEqual((marker['instance'], marker['layout'], marker['image']), ('fixture', 1, 'fixture-image'))
         self.assertEqual(self.state.registered()['id'], marker['id'])
         self.assertEqual((self.state.root / stateful.MARKER).stat().st_mode & 0o777, 0o600)
-        self.assertFalse([entry for entry in self.state.root.iterdir() if entry.name.startswith('.seed-')])
+        self.assertEqual(docker.owner, f'{__import__("os").getuid()}:{__import__("os").getgid()}')
         seed = next(script for script in docker.scripts if 'tar' in script)
+        self.assertLess(seed.index('mv "$d/home"'), seed.index('.caged-state.tmp'), 'marker is written last')
         for path in stateful.DOCKER_MANAGED:
             self.assertIn('--exclude=./' + path, seed)
         self.assertLess(seed.index('--exclude'), seed.index('-cpf'), 'GNU tar needs excludes before members')
@@ -76,6 +80,15 @@ class StateDirectory(unittest.TestCase):
         self.ensure(docker)
         self.assertEqual(docker.scripts, [])
         self.assertEqual((self.state.home / 'work.txt').read_text(), 'kept')
+
+    def test_a_marker_without_registry_is_registered_instead_of_reseeded(self):
+        self.ensure(FakeDocker())
+        identity = self.state.marker()['id']
+        self.state.registry.unlink()
+        docker = FakeDocker()
+        self.ensure(docker)
+        self.assertEqual(docker.scripts, [])
+        self.assertEqual(self.state.registered()['id'], identity)
 
     def test_a_registered_but_missing_environment_is_never_reseeded(self):
         self.ensure(FakeDocker())
@@ -93,7 +106,7 @@ class StateDirectory(unittest.TestCase):
         with self.assertRaisesRegex(stateful.StateError, 'not the environment registered'):
             self.state.validate()
         other = stateful.InstanceState(self.state.root.parent, 'unmarked')
-        (other.root / 'system').mkdir(parents=True)
+        (other.root / 'projects').mkdir(parents=True)
         with self.assertRaisesRegex(stateful.StateError, 'no state marker'):
             other.validate()
 
@@ -108,7 +121,8 @@ class StateDirectory(unittest.TestCase):
         with self.assertRaises(CageError):
             self.ensure(FakeDocker(seed_ok=False))
         self.assertIsNone(self.state.marker())
-        self.state.validate()  # leftovers alone do not block the retry
+        self.assertTrue(self.state.system.is_dir())
+        self.state.validate()  # an unregistered, unmarked system/ is seed debris
         docker = FakeDocker()
         self.ensure(docker)
         self.assertTrue(docker.scripts[0].startswith('rm -rf'))
@@ -129,23 +143,23 @@ class StateDirectory(unittest.TestCase):
 
 
 class LegacyCredentials(unittest.TestCase):
-    def test_default_instance_adopts_config_claude_once(self):
+    def test_configured_instance_adopts_config_claude_once(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / 'config' / '.claude').mkdir(parents=True)
             (root / 'config' / '.claude' / '.credentials.json').write_text('{}')
             target = root / 'config' / 'claude' / 'caged-claude'
             args = SimpleNamespace(claude_config_dir=target, instance='caged-claude',
-                                   sources={'claude_config_dir': 'default'})
+                                   sources={'claude_config_dir': 'default', 'instance': 'config'})
             with patch.object(stateful, 'ROOT', root):
-                stateful.adopt_legacy_credentials(args, 'caged-claude')
+                stateful.adopt_legacy_credentials(args)
                 self.assertEqual((target / '.credentials.json').read_text(), '{}')
                 self.assertFalse((root / 'config' / '.claude').exists())
                 other = SimpleNamespace(claude_config_dir=root / 'config' / 'claude' / 'other', instance='other',
-                                        sources={'claude_config_dir': 'default'})
+                                        sources={'claude_config_dir': 'default', 'instance': 'cli'})
                 (root / 'config' / '.claude').mkdir()
-                stateful.adopt_legacy_credentials(other, 'caged-claude')
-                self.assertTrue((root / 'config' / '.claude').is_dir(), 'only the default instance adopts it')
+                stateful.adopt_legacy_credentials(other)
+                self.assertTrue((root / 'config' / '.claude').is_dir(), 'a throwaway --instance must not adopt it')
                 self.assertTrue(other.claude_config_dir.is_dir())
 
 
