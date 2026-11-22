@@ -170,7 +170,7 @@ config/claude/<实例>/  → /home/claude/.claude   （叠加在 home 的挂载�
 | `./cage restore <快照>` | 停止后把当前状态归档，再从快照恢复 |
 | `./cage destroy` | 删除整个实例状态。文件属主有 root，所以通过容器执行；需要输入实例名确认 |
 
-升级方式和真实机器一样：在容器里执行 `apt upgrade`、`npm i -g @anthropic-ai/claude-code@<版本>`，或者用 `./cage upgrade claude` 代为执行。**修改 Dockerfile 只影响新实例和 `reset`**，已有实例以状态目录为准。
+升级方式和真实机器一样：在容器里执行 `apt-get update && apt-get upgrade`（新 seed 的环境没有软件包索引，第一次安装任何包之前也要先 `apt-get update`）、`npm i -g @anthropic-ai/claude-code@<版本>`，或者用 `./cage upgrade claude` 代为执行。**修改 Dockerfile 只影响新实例和 `reset`**，已有实例以状态目录为准。
 
 ## 6. 各类故障如何恢复
 

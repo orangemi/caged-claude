@@ -214,7 +214,8 @@ Claude 容器里所有会被修改的目录都实时保存在宿主 `state/<实�
 | `/home/claude` | `home/` | `pip --user`、nvm/mise、下载的文件、`~/.cache` |
 | 浏览器 `/config` | `browser/` | Chromium 的登录、Cookie、历史 |
 
-- **首次启动**从 Debian 13 镜像复制一份系统到 `state/<实例>/`（约 1 GB），之后不再从镜像读取；修改 Dockerfile 只影响新实例。升级像真实机器一样在容器里做：`sudo apt upgrade`、`sudo npm i -g @anthropic-ai/claude-code@<版本>`。
+- **首次启动**从 Debian 13 镜像复制一份系统到 `state/<实例>/`（约 1 GB），之后不再从镜像读取；修改 Dockerfile 只影响新实例。升级像真实机器一样在容器里做：`sudo apt-get update && sudo apt-get upgrade`、`sudo npm i -g @anthropic-ai/claude-code@<版本>`。
+- **第一次用 apt 前先 `sudo apt-get update`**：镜像为了减小体积删掉了软件包索引，新环境里直接 `apt-get install` 会报 `Unable to locate package`。更新一次后索引保存在 `state/` 中，例如：`./cage shell -- sh -c 'sudo apt-get update && sudo apt-get install -y jq'`。
 - **默认有免密码 sudo**（`claude.sudo: false` 可关闭）。网络边界由网关保证，与容器内 root 无关。
 - **不保留**：`/tmp`、`/run` 与真实 Linux 重启一样会清空。
 - **保护**：`state/<实例>/.caged-state` 标记把目录和实例绑定；磁盘未接上、路径写错或目录不属于这个实例时拒绝启动，不会新建空环境覆盖。首次初始化前会检测文件系统能否保留属主、setuid 和链接，**只支持 Linux 文件系统（Linux/WSL 的 ext4 等），不支持 macOS 文件共享**。
