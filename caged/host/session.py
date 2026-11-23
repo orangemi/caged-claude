@@ -308,7 +308,20 @@ class Session:
             if self.browser_process is not None and self.browser_process.poll() is not None:
                 break
             time.sleep(1)
-        raise CageError('Actual Chromium check failed: ' + last_error)
+        profile_location = (f'{self.state.disk} (inside the image: browser/.config/chromium)'
+                            if self.state.backend == 'image'
+                            else str(self.state.browser / '.config' / 'chromium'))
+        raise CageError(
+            'Actual Chromium check failed: ' + last_error
+            + '\nIf you manually edited a browser profile, its configuration may be invalid.'
+            + '\nBrowser profiles: ' + profile_location
+            + '\nRecovery: run ./cage down with the same settings/instance, back up and rename '
+              'the damaged profile\'s Preferences file, then run ./cage up with the same settings/instance. '
+              'For image storage, mount the image to access the browser directory.'
+            + '\nRenaming Preferences resets that profile\'s browser settings. To reset all browser '
+              'profiles instead, back up and rename only the .config/chromium directory; '
+              'this also resets browser logins, cookies and history.'
+            + '\nDo not delete the whole state directory or disk.img: they also contain the Claude environment.')
 
     def fetch_ui_head(self):
         # The launcher container cannot reach the host loopback port; there,
