@@ -242,6 +242,8 @@ IPv6 的输入、转发、输出也默认拒绝，仅允许回环。IPv4 输入�
 
 浏览器检查读取实际的 `Intl.DateTimeFormat()`、`navigator.language`、`navigator.languages` 和 `chrome://policy`。时区以浏览器自身的规范名称比较；系统检查核对时区文件是否指向同一个 zoneinfo 文件，以及该时区当前的实际 UTC 偏移，因此不固定 `+0800`，也适用于夏令时和合法的时区别名。
 
+浏览器保留 Chromium 原生标签栏和地址栏，不使用 `--kiosk`，也不添加系统标题栏。启动前恢复 `browser.custom_chrome_frame=true`，并将 GTK 的 `gtk-decoration-layout` 设为 `:`，隐藏 Chromium 自绘的窗口关闭、最小化和最大化按钮；Openbox 使用 `NO_DECOR` 取消额外标题栏。`containers/browser/session.sh` 负责运行和重启浏览器：关闭最后一个标签、关闭最后一个窗口或进程退出后，自动重新打开 `chrome://newtab`。`--disable-background-mode` 避免关闭所有窗口后仍留下无窗口的后台进程。镜像通过 `HARDEN_DESKTOP`、`HARDEN_OPENBOX` 禁止桌面菜单、终端、sudo 和外部打开工具，并禁用 Selkies 应用启动、文件传输及命令接口；剪贴板和正常的 DevTools/CDP 保持可用。`./cage shell browser` 仍是宿主侧的管理入口。
+
 ## 9. 进程与数据生命周期
 
 ### 9.1 服务入口与后台容器
