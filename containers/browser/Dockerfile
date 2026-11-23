@@ -33,3 +33,8 @@ COPY --chmod=755 containers/browser/init-profile-lock.sh /custom-cont-init.d/05-
 COPY --chmod=755 containers/browser/init-settings.sh /custom-cont-init.d/10-caged-settings
 COPY --chmod=755 containers/browser/configure-browser.py /usr/local/bin/caged-browser-configure
 COPY --chmod=755 containers/browser/session.sh /usr/local/bin/caged-browser-session
+COPY --chmod=755 containers/browser/agent.sh /etc/s6-overlay/s6-rc.d/svc-caged-agent/run
+RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-caged-agent/dependencies.d \
+    && printf 'longrun\n' > /etc/s6-overlay/s6-rc.d/svc-caged-agent/type \
+    && touch /etc/s6-overlay/s6-rc.d/svc-caged-agent/dependencies.d/init-services \
+             /etc/s6-overlay/s6-rc.d/user/contents.d/svc-caged-agent

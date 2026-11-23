@@ -360,10 +360,8 @@ class Session:
         result = engine.write_private(container, '/run/caged-agent.json', payload, timeout=10)
         if result.returncode:
             raise CageError('Cannot enroll private application probe: ' + role)
-        if role == 'browser':
-            engine.docker('exec', container, 'bash', '/custom-cont-init.d/10-caged-settings', timeout=25)
-        engine.docker('exec', '-d', '--user', '0:0', *self.runtime_environment(container), container,
-                      'python3', '-m', 'caged.runtime.agents.environment', role)
+        # The container's supervisor owns the probe process. Enrollment only
+        # supplies its identity, so docker restart needs no host-side exec.
 
     def wait_gate_open(self):
         deadline = time.monotonic() + 100

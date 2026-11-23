@@ -93,6 +93,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests/unit -t . -v
 
 `test` 执行 `tests/unit` 与 `tests/integration`，包含配置优先级、校验与跨组件传递测试，并使用本地替身验证网络和进程清理；不代表真实节点已经验证。测试服务和启动替身集中在 `tests/fixtures`。`verify` 和 `smoke` 使用真实节点，但同样不会检查或改变宿主 TUN。
 
+应用探针生命周期回归可以单独执行。将 `CAGED_BROWSER_TEST_IMAGE` 和 `CAGED_CLAUDE_TEST_IMAGE` 分别设为已构建的新镜像，再运行 `python3 -m unittest tests.integration.test_agent_lifecycle -v`。测试使用无外网、无用户状态和无发布端口的临时容器，验证等待私有注册、签名环境报告、探针被杀后的自动拉起，以及 `docker restart` 后复用原身份自动恢复；未指定对应镜像的测试会跳过。
+
 `audit` 参考 Claude-Cage 的检查项目，但按本项目的容器结构取证。检查结果逐项输出 JSON，未完成的项保持 `unknown`；任何必要探针失败都会返回非零退出码。它只适用于新建的临时会话，会真正删除自己创建的网络容器进行故障演练，不能附加到已有浏览器。
 
 | 检查 | 本项目的证据 |
