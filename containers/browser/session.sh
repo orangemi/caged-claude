@@ -1,34 +1,21 @@
 #!/usr/bin/env bash
-# Caged Claude browser session.
-#
-# The browser window is the only program the remote user may interact with.
-# If it exits for any reason (close button, keyboard shortcut, crash), keep the
-# session alive with a static crash screen instead of falling back to the
-# Openbox desktop, a terminal, or a fresh browser. Recovery is host-side:
-# ./cage down && ./cage up.
+# Keep a usable browser on screen after the last tab/window closes or Chromium
+# exits. Do not fall back to a desktop, terminal, or a noninteractive crash page.
 set -u
 
 trap 'exit 0' TERM INT
 
-CRASH_PROFILE=/tmp/caged-crash-profile
-
-echo '[caged] starting kiosk Chromium'
-/usr/bin/wrapped-chromium --kiosk ${CHROME_CLI:-}
-status=$?
-echo "[caged] Chromium exited (${status}); showing the crash screen" >&2
-
-mkdir -p "$CRASH_PROFILE"
+/usr/local/bin/caged-browser-configure || exit 1
 while true; do
-    /usr/bin/chromium \
-        --no-sandbox \
-        --password-store=basic \
-        --test-type \
-        --kiosk \
+    echo '[caged] opening Chromium with a fresh tab'
+    # Background mode must not leave a windowless browser process alive after
+    # the last tab closes. The next launch always supplies an explicit new tab.
+    /usr/bin/wrapped-chromium \
         --no-first-run \
-        --no-default-browser-check \
+        --disable-background-mode \
         --hide-crash-restore-bubble \
-        --user-data-dir="$CRASH_PROFILE" \
-        file:///usr/share/caged/crash.html \
-        >/dev/null 2>&1
+        ${CHROME_CLI:-} chrome://newtab
+    status=$?
+    echo "[caged] Chromium exited (${status}); reopening a new tab" >&2
     sleep 1
 done
