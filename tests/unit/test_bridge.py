@@ -201,7 +201,7 @@ class LauncherSide(unittest.TestCase):
     def test_plan_names_the_host_side_paths(self):
         plan = hostbridge.plan(self.args, self.state, 'start')
         self.assertEqual(plan['bridge'], str(self.state.root / 'bridge'))
-        self.assertEqual(plan['config'], str(ROOT / 'config' / 'host-bridge' / 'fixture'))
+        self.assertEqual(plan['config'], str(self.state.root / 'bridge-host'))
         self.assertEqual((plan['transport'], plan['port']), ('unix', 41234))
         bridge.Plan(plan)  # what the host side accepts
 
@@ -231,6 +231,18 @@ class LauncherSide(unittest.TestCase):
     def test_bridge_directory_does_not_count_as_unmarked_state(self):
         hostbridge.prepare(self.state)
         self.assertIsNone(self.state.validate())
+
+    def test_bridge_migrates_its_host_identity_outside_the_client_mount(self):
+        root = Path(self.temp.name)
+        legacy = root / 'config' / 'host-bridge' / self.state.instance
+        legacy.mkdir(parents=True, mode=0o700)
+        (legacy / 'ssh_host_ed25519_key').write_text('fixture')
+        with patch.object(hostbridge, 'ROOT', root):
+            mounted = hostbridge.prepare(self.state)
+        plan = bridge.Plan(hostbridge.plan(self.args, self.state, 'start'))
+        self.assertEqual(plan.host_key.read_text(), 'fixture')
+        self.assertNotIn(mounted, plan.host_key.parents)
+        self.assertFalse(legacy.exists())
 
 
 if __name__ == '__main__':

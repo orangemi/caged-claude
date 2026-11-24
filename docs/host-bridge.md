@@ -35,7 +35,7 @@ ssh host / scp / rsync
                                    宿主桥监听进程（./cage up 启动）
                                          │ 每个连接
                                          ▼
-                                   sshd -i -f config/host-bridge/sshd_config
+                                   sshd -i -f state/<实例>/bridge-host/sshd_config
                                    （以你的用户身份运行，不监听任何端口）
                                          │
                                    你的 shell，使用宿主的网络、代理和文件
@@ -57,7 +57,7 @@ ssh host / scp / rsync
 
 ### 3.3 sshd：项目专用、非 root、按需启动
 
-不使用、也不修改系统的 SSH 服务，宿主只需要装有 `sshd` 程序。所有配置都放在 `config/host-bridge/<实例>/`（`700`）：
+宿主只需要安装 `sshd`。专用配置、主机密钥和日志保存在 `<state.dir>/<实例>/bridge-host/`（`700`）。启动器会从旧版的 `config/host-bridge/<实例>/` 迁移这些文件。
 
 | 文件 | 用途 |
 | --- | --- |
@@ -69,8 +69,8 @@ ssh host / scp / rsync
 `sshd_config` 的要点：
 
 ```text
-HostKey <项目>/config/host-bridge/ssh_host_ed25519_key
-AuthorizedKeysFile <项目>/config/host-bridge/authorized_keys
+HostKey <state.dir>/<实例>/bridge-host/ssh_host_ed25519_key
+AuthorizedKeysFile <state.dir>/<实例>/bridge-host/authorized_keys
 AllowUsers <宿主用户名>
 PubkeyAuthentication yes
 PasswordAuthentication no
@@ -88,7 +88,7 @@ PidFile none
 
 ### 3.4 容器侧客户端
 
-- **客户端密钥**：首次启用时，由宿主侧生成 `ed25519` 密钥对。私钥放在 `state/<实例>/bridge/client_ed25519`（`600`，你的用户所有），随这个目录以只读方式出现在容器的 `/run/caged-host/` 中。容器里的 `claude-user` 与你的 UID 相同，所以能读取它，但无法替换它。公钥写入 `config/host-bridge/<实例>/authorized_keys`。
+- **客户端密钥**：首次启用时，由宿主侧生成 `ed25519` 密钥对。私钥放在 `state/<实例>/bridge/client_ed25519`（`600`，你的用户所有），随这个目录以只读方式出现在容器的 `/run/caged-host/` 中。容器里的 `claude-user` 与你的 UID 相同，所以能读取它，但无法替换它。公钥写入同一实例的 `bridge-host/authorized_keys`。
 - **固定 host key**：宿主桥的 host key 公钥写入 `/run/caged-host/known_hosts`，容器在连接时校验，不会接受其他 host key。
 - **客户端配置**：entrypoint 每次启动时重写 `/etc/ssh/ssh_config.d/caged-host.conf`。不修改用户自己的 `~/.ssh/config`：
 
@@ -203,14 +203,14 @@ Docker Desktop on Mac 尚未实测。它的 `host.docker.internal` 一般解析�
 
 1. **开启即授权，而且默认开启。** 笼子里任何能读到客户端私钥、能连上 socket 的进程，都能以你的身份在宿主上执行任意命令、读取你能读取的任何文件。这就是这个功能的用途。不需要时，用 `host_bridge.enabled: false` 关闭。是否需要审批、如何审计，留到 §8 统一设计。
 2. **端口转发会让笼子访问宿主的网络。** `ssh -L` 能访问宿主能访问的任何地址，这符合原则 2（宿主命令按宿主的环境来）。这个设置只作用于桥专用的 sshd，系统的 SSH 服务不受影响。已确认保持开启。
-3. **容器无法篡改通道。** socket 所在目录只读挂载；host key 固定；sshd 配置、`authorized_keys`、日志都在 `config/` 和 `state/<实例>/bridge/` 中，容器无法访问。
+3. **容器无法篡改通道。** socket 所在目录以只读方式挂载。宿主桥把固定的主机密钥、sshd 配置、`authorized_keys` 和日志保存在单独的 `bridge-host/` 目录，由宿主监听器访问。
 4. **系统 SSH 服务保持不变。** 不开放任何网络端口，不修改宿主上已有的 sshd 配置和 `~/.ssh/authorized_keys`。
 5. **密钥可以留在宿主上。** 推荐用 `ssh -J host …` 或在宿主 shell 里使用宿主的密钥。这样宿主上的私钥不必复制进容器，被复制进容器的只有桥专用的那把客户端密钥。
 
 ## 8. 以后再定
 
 - **审批**：哪些命令需要确认、在哪里确认、如何防止伪造确认界面。SSH 提供了现成的扩展点（`authorized_keys` 的 `command=`、`restrict`，以及 ForceCommand 包装器）。
-- **审计**：桥的会话日志，与笼子内命令的记录统一。Claude Code 自己的会话记录位于 `config/claude/<实例>/projects/`，容器可以写入，不能作为可信的审计依据。
+- **审计**：桥的会话日志，与笼子内命令的记录统一。Claude Code 的会话记录默认位于 `state/<实例>/claude/projects/`，容器可以写入，不能作为可信的审计依据。
 - **Docker Desktop on Mac**：实测 §6.2 的方案。
 
 ## 决定记录

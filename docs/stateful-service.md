@@ -75,7 +75,10 @@ state/<实例>/
 │   ├── srv/   → /srv
 │   └── root/  → /root
 ├── home/      → /home/claude   # 用户层：claude-user 的 HOME
+├── claude/    → /home/claude/.claude   # 凭证、设置与会话，700 权限
 ├── browser/   → 浏览器容器的 /config   # Chromium 资料：登录、Cookie、历史，700 权限
+├── bridge/                 # 宿主桥 socket 与客户端密钥，容器只读挂载
+├── bridge-host/            # 宿主桥的主机密钥、生成的配置和日志
 ├── archive/<时间>/        # reset 移入的旧 system/（或 home/、browser/），附 manifest.json
 └── snapshots/<时间>.tar.zst
 ```
@@ -86,15 +89,14 @@ state/<实例>/
 
 只持久化 `/home/claude`，不持久化整个 `/home`。原因是 Linux 宿主上的 workspace 通常在 `/home/<用户>/…`，并按原路径挂载进容器：如果 `/home` 整体是持久化挂载，Docker 会在 `state/<实例>/home` 里为这些 workspace 建出 root 属主的空挂载点目录。同理，workspace 也不能位于 `/var`、`/opt`、`/srv`、`/root` 之下，配置校验会拒绝。
 
-Claude 的登录凭证**单独存放**，不放在 `state/` 里：
+Claude 的登录凭证和会话按实例单独挂载：
 
 ```text
-config/claude/<实例>/  → /home/claude/.claude   （叠加在 home 的挂载之上，700 权限）
+<state.dir>/<实例>/claude/  → /home/claude/.claude   （叠加在 home 的挂载之上，700 权限）
 ```
 
-- 凭证最敏感，放在本来就是 `700`、专门存私有配置的 `config/` 中，不和约 1 GB 的状态一起打包或复制。
-- 体积小，备份和迁移可以只拷这一个目录。
-- `reset --home`，甚至 `destroy` 整个环境之后，仍然可以保持登录，不必重新授权。
+- 完整备份实例目录会包含凭证。只迁移 Claude 登录和会话时，可以单独复制 `claude/`。
+- `reset --home` 的设计保留 `claude/`。删除整个实例目录也会删除其中的凭证。
 - `CLAUDE_CONFIG_DIR=/home/claude/.claude`，原本在 HOME 外层的 `.claude.json` 也放在这里。
 - 按实例分目录，两个实例不会同时写同一份凭证。`claude.config_dir` 仍然可以覆盖这个位置。
 
@@ -114,12 +116,12 @@ config/claude/<实例>/  → /home/claude/.claude   （叠加在 home 的挂载�
 ```text
 --mount type=bind,src=state/<实例>/system/etc,dst=/etc     （usr、var、opt、srv、root 同理）
 --mount type=bind,src=state/<实例>/home,dst=/home/claude
---mount type=bind,src=config/claude/<实例>,dst=/home/claude/.claude
+--mount type=bind,src=state/<实例>/claude,dst=/home/claude/.claude
 --mount type=bind,src=<项目>/caged,dst=/caged-runtime/caged,readonly
 --mount type=bind,src=<项目>/containers/claude/entrypoint.sh,dst=/caged-runtime/entrypoint,readonly
 ```
 
-- **标记必须存在**：状态目录存在但 `.caged-state` 缺失、实例 ID 不符，或配置里记录过这个实例但目录不见了，都拒绝启动，提示“环境存储不可用”，绝不自动重新初始化（借鉴 Claude-Cage 的存储标记）。
+- **标记必须存在**：项目下固定的 `state/.instances/` 保存实例登记。登记过的实例如果缺少 `.caged-state`、实例 ID 不符或状态盘掉线，启动器会拒绝启动并提示环境存储不可用。
 - **身份**：`claude-user` 的 UID/GID 跟随宿主（PUID/PGID）。entrypoint 用 `usermod` 修改的 `/etc/passwd` 位于持久化的 `/etc` 中，所以会保留。PUID 变化时，只在属主不一致的情况下 chown `/home/claude`。
 - **启动器自己的代码不进入状态目录**：entrypoint、环境探针、检查程序从项目目录只读挂载到 `/caged-runtime`，用 `PYTHONPATH=/caged-runtime` 运行。这样用户（包括容器内 root）无法修改它们，项目更新后下次启动就生效。探针依赖状态里的 `python3`；用户如果弄坏了 `python3`，探针会失败，网关随即断网（失败即断网），不会放行。
 - 网关不变：节点凭证和控制密钥仍只放在 tmpfs，不持久化。
@@ -158,7 +160,7 @@ config/claude/<实例>/  → /home/claude/.claude   （叠加在 home 的挂载�
 | 浏览器登录、Cookie、历史 | 浏览器 `/config` | 保留 |
 | `/tmp` | tmpfs | **不保留**，和真实 Linux 重启一样（Debian 13 的 `/tmp` 默认就是 tmpfs）。需要在文档和 `./cage claude` 的提示中写明 |
 
-### 4.6 image 后端：整个状态放在一个 ext4 镜像文件里（macOS）
+### 4.6 image 后端：在 ext4 镜像中持久化环境（macOS）
 
 macOS 上，宿主目录要经过 OrbStack 的文件共享（FUSE）才能进入 Docker 的 Linux 虚拟机。实测（§4.7）这层共享接受 `chown`，但不保存属主，所以 §4.1 的目录布局在 Mac 上无法通过能力检测。image 后端把**同一套布局**放进一个 ext4 镜像文件，文件本身仍在宿主上：
 
@@ -168,16 +170,18 @@ state/<实例>/
 ├── lifecycle.lock
 ├── disk.img          # 稀疏的 ext4 镜像，上限 state.size（默认 64g），按实际写入占用空间
 │                     #   里面是 system/、home/、browser/，与 §4.1 相同
-└── bridge/           # 宿主桥，仍是宿主目录
+├── claude/           # Claude 凭证、设置和会话，宿主目录
+├── bridge/           # 宿主桥 socket 与客户端密钥，宿主目录
+└── bridge-host/      # 宿主桥主机密钥、配置和日志，宿主目录
 ```
 
 - **选择**：`state.backend` 默认 `auto`，macOS 上是 `image`，Linux/WSL 上仍是 `dir`，行为不变。Linux/WSL 也可以显式写 `state.backend: image`。已有环境始终沿用标记里记录的后端；显式配置与之不符时拒绝启动，不会悄悄换后端。
-- **挂载方式**（§4.7 的 L3）：一个短暂的特权辅助容器（`containers/storage`，只有 e2fsprogs，无网络）在 Docker 虚拟机里执行 `losetup`，把镜像接到 loop 设备上；随后定义 Docker local 卷 `<实例>-state`（`type=ext4,device=/dev/loopN`）。claude 和 browser 容器用 `volume-subpath` 挂载各个目录，例如 `system/usr → /usr`、`home → /home/claude`、`browser → /config`。这两个容器本身仍然没有特权。Claude 凭证仍是 `config/claude/<实例>/` 的 bind mount（普通文件放在 FUSE 上没有问题）。
+- **挂载方式**（§4.7 的 L3）：短暂运行的特权辅助容器 `containers/storage` 在 Docker 虚拟机里通过 `losetup` 把镜像接到 loop 设备，再定义 Docker local 卷 `<实例>-state`。claude 和 browser 容器以 `volume-subpath` 挂载系统、HOME 和浏览器资料。Claude 凭证从实例下的 `claude/` 宿主目录单独绑定。
 - **生命周期**：Docker 在第一个使用卷的容器启动时挂载文件系统，在最后一个容器退出时卸载。`./cage down` 再删除卷的定义（不删数据），并断开 loop 设备，所以停止后的 `disk.img` 是干净、可以直接复制的文件。loop 设备号在 Docker 虚拟机重启后会变化，因此每次 `up` 都重新定义卷；只有没被任何容器使用的卷才会被替换。
 - **挂载选项**：loop 设备开启 direct I/O，虚拟机不再把同一份数据额外缓存一遍；卷以 `discard` 挂载，容器里删除文件后，`disk.img` 在宿主上占用的空间随即缩小（§4.7）。
 - **身份校验**：标记记录了文件系统 UUID；接入前用 `tune2fs` 比对，被替换的镜像会被拒绝。同一个文件已经接在多个 loop 设备上时也拒绝，避免同一文件系统被挂载两次。不开启 ext4 的多重挂载保护（MMP）：它防的是两台机器同时挂载同一个文件（例如放在网盘里），但实测在 OrbStack 上检查间隔会被拉长到 42 秒，每次异常停机后的第一次挂载要多等一分多钟。
 - **首次初始化**：在 `disk.img.tmp` 上建文件系统、接入并 seed，完成后断开、改名为 `disk.img`，**最后**写宿主标记。中断只会留下 `disk.img.tmp`，下次启动清理后重来；没有标记的 `disk.img` 永远不会被删除或覆盖。
-- **迁移**：停止实例后，复制整个 `state/<实例>/` 和 `config/claude/<实例>/` 即可，放到另一台 Mac 上，或者放到 Linux 上作为 image 后端使用。在 Mac 上用 `cp -c` 可以利用 APFS 克隆，不占额外空间。dir 与 image 两种后端之间的转换（`export`/`import`）放在阶段 2。
+- **迁移**：停止实例后，复制整个 `state/<实例>/`，可在另一台 Mac 或 Linux 上以 image 后端使用。在 Mac 上可用 `cp -c` 克隆稀疏镜像。dir 与 image 后端之间的转换放在阶段 2。
 - **代价**：多一次特权容器调用（只做 losetup）；数据的持久性取决于 OrbStack 把 loop 设备的写入和 `fsync` 落到 Mac 文件上的方式。OrbStack 自己的虚拟机磁盘也是 Mac 上的镜像文件，风险属于同一类。
 
 ### 4.7 macOS 实测（维护者，2026-11）
@@ -215,7 +219,7 @@ state/<实例>/
 | --- | --- |
 | `./cage up` | 未初始化则 seed；然后挂载状态启动，网络检查流程不变 |
 | `./cage down` | 停止并删除容器，状态目录保留，并执行 `sync`；image 后端还会删除卷定义、断开 loop 设备 |
-| `./cage reset [--home] [--browser]` | 停止后把 `system/` **移动**到 `archive/<时间>/`（同盘上是改名，瞬间完成），再从当前镜像重新 seed 系统层。HOME 和浏览器资料默认保留，`--home`、`--browser` 时分别一并归档。Claude 凭证在 `config/` 中，任何 reset 都不会触及 |
+| `./cage reset [--home] [--browser]` | 停止后把 `system/` 移到 `archive/<时间>/`，再从当前镜像重新 seed 系统层。默认保留 HOME 和浏览器资料，`--home`、`--browser` 可分别归档对应目录。Claude 凭证目录单独保留 |
 | `./cage archive list\|restore <时间>\|prune <时间>` | 查看、回滚、删除归档；删除需要输入实例名确认 |
 | `./cage snapshot` | `docker pause` 应用容器，打包 `system/` 和 `home/` 为 `snapshots/<时间>.tar.zst`，再 `unpause`。可用宿主 cron 或 systemd timer 定时调用 |
 | `./cage restore <快照>` | 停止后把当前状态归档，再从快照恢复 |
@@ -271,11 +275,7 @@ state/<实例>/
 
 ### 迁移
 
-现有实例是 `--rm` 容器，系统层本来就不会保留，所以只需要迁移 Claude 登录状态：
-
-- 默认实例首次启动时，如果 `config/claude/<实例>/` 不存在而 `config/.claude` 存在，就把后者**移动**过去，登录状态不变。同一块盘上只是改名；失败时保持原样；
-- `CLAUDE_CONFIG_DIR` 改为 `/home/claude/.claude`，`HOME` 从 `/config` 改为 `/home/claude`；
-- 浏览器资料目前是临时的，没有需要迁移的内容。
+从旧目录布局升级时，`./cage up` 校验实例后迁移默认的 Claude 数据和宿主桥状态。实例登记从 `config/instances/` 迁到项目下固定的 `state/.instances/`。历史来源、冲突处理和外置路径见 [配置说明](configuration.md#workspace-与-claude-授权持久化)。
 
 ### 阶段 1：持久化主体
 
@@ -309,9 +309,9 @@ state/<实例>/
 | 问题 | 结论 |
 | --- | --- |
 | 状态目录位置 | 项目内 `state/<实例>/`（已确认） |
-| Claude 凭证 | 单独存放在 `config/claude/<实例>/`，不随 `state/` 打包或重置（已确认） |
+| Claude 凭证 | 默认存放在 `<state.dir>/<实例>/claude/`，独立于系统和 HOME 挂载 |
 | 浏览器登录与 Cookie | 持久化到 `state/<实例>/browser/`，与 Claude 系统层分开（已确认） |
 | macOS | 使用 image 后端：`state/<实例>/disk.img`，经 loop 设备和 Docker local 卷挂载（已确认，§4.6）；Linux/WSL 默认仍用目录，可选 image |
-| 浏览器资料（image 后端） | 与系统、HOME 放在同一个镜像里，一个实例的全部状态就是 `disk.img` 加凭证目录（已确认） |
+| 浏览器资料（image 后端） | 与系统、HOME 同在 `disk.img` 里。Claude 状态和宿主桥保存在实例目录下的独立目录 |
 | 基础镜像 | Debian 13（trixie）slim，固定 digest（已确认，比较见 §7） |
 | sudo | 默认免密码 sudo，`claude.sudo: false` 可关闭（已确认，代价见 §8 第 6 条） |

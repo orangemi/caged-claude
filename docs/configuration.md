@@ -112,13 +112,17 @@ workspace:
 Claude 的登录凭证单独保存，不和环境状态放在一起：
 
 ```text
-宿主：<项目>/config/claude/<实例>  →  Claude 容器：/home/claude/.claude（即 ~/.claude）
+宿主：<state.dir>/<实例>/claude  →  Claude 容器：/home/claude/.claude（即 ~/.claude）
 CLAUDE_CONFIG_DIR=/home/claude/.claude
 ```
 
-显式设置 `CLAUDE_CONFIG_DIR` 使 `.credentials.json`、`settings.json`、会话/记忆以及原本在 HOME 外层的 `.claude.json` 一并保存在这个目录中。默认不会复制宿主的 `.claude` 或 Keychain；首次通过 `./cage claude` 登录。容器中无法自动打开本机浏览器时，按 CLI 提示在宿主打开登录 URL 并粘贴返回代码。旧版本的 `config/.claude` 会在默认实例首次启动时移动到 `config/claude/caged-claude`，登录状态不变。
+`.credentials.json`、`settings.json`、会话、记忆以及 `.claude.json` 都保存在这个目录中，目录权限为 `700`。新实例通过 `./cage claude` 登录。容器无法打开本机浏览器时，按 CLI 提示在宿主打开登录 URL 并粘贴返回代码。
 
-`claude.config_dir` 是可选项，只能指向本项目 `config/` 下的子目录。目录权限为 `700`，授权文件由 Claude 管理。删除或重建 `state/` 都不会动它；有效登录令牌可继续使用，令牌本身仍有有效期。`config/` 整体已被 Git 忽略，也被排除在镜像构建上下文之外。
+`claude.config_dir` 可指定实例的 `claude/` 目录或其子目录。已有的显式 `config/` 路径继续有效，由该配置指定原有资料的位置。`config/` 和 `state/` 都被 Git 忽略，并排除在镜像构建上下文之外。
+
+升级后的首次 `./cage up` 会把旧版默认目录 `config/claude/<实例>/` 迁到新位置。如果没有该目录，通过应用配置、环境变量或默认值选中的实例可以接收更早的 `config/.claude`。目标已存在时保留两边的目录。跨文件系统时，完整复制成功后才启用新目录，旧目录保留。启用的宿主桥也会迁移其主机身份和日志，实例登记则迁到项目下固定的 `state/.instances/`。
+
+如果 `state.dir` 位于项目之外，使用 `CAGED_NATIVE=1` 执行 `./cage up`。默认容器启动器以只读方式共享项目之外的路径。
 
 ## launcher 运行方式
 

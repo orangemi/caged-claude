@@ -11,6 +11,7 @@ from pathlib import Path
 import socket
 from .errors import CageError
 from .paths import ROOT
+from .stateful import adopt_legacy_directory
 
 MOUNT = '/run/caged-host'
 HOST_NAME = 'host.docker.internal'
@@ -46,11 +47,12 @@ def bridge_dir(state):
     return state.root / 'bridge'
 
 
-def config_dir(instance):
-    return ROOT / 'config' / 'host-bridge' / instance
+def config_dir(state):
+    return state.root / 'bridge-host'
 
 
 def prepare(state):
+    adopt_legacy_directory(ROOT / 'config' / 'host-bridge' / state.instance, config_dir(state))
     folder = bridge_dir(state)
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(folder, 0o700)
@@ -59,7 +61,7 @@ def prepare(state):
 
 def plan(args, state, action):
     return {'action': action, 'instance': args.instance, 'user': args.host_bridge_user,
-            'sshd': args.host_bridge_sshd, 'bridge': str(bridge_dir(state)), 'config': str(config_dir(args.instance)),
+            'sshd': args.host_bridge_sshd, 'bridge': str(bridge_dir(state)), 'config': str(config_dir(state)),
             'transport': args.host_bridge_transport, 'port': args.host_bridge_port}
 
 

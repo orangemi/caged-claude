@@ -59,7 +59,7 @@ Docker                                                              │
 
 ## 数据生命周期
 
-容器都以 `--rm` 运行，删除容器不会丢数据：Claude 的系统与 HOME、浏览器资料保存在 `state/<实例>/`，Claude 授权在 `config/claude/<实例>/`，workspace 就是宿主原目录。
+容器都以 `--rm` 运行。Claude 的系统与 HOME、浏览器资料、Claude 授权和宿主桥状态默认保存在 `state/<实例>/`。workspace 是宿主原目录。项目下的 `state/.instances/` 保存登记，在配置的状态磁盘缺失时仍可校验实例身份。
 
 项目的 `config/mihomo.yaml` 保存配置快照及其中的节点凭证。启动器读取选定节点后，通过标准输入传给网络容器，不把凭证放进容器环境变量或镜像。生成的运行时配置、控制密钥和核心日志只保存在容器内 `/run/caged` 的 tmpfs，网关退出后销毁。项目配置快照、Docker 镜像和构建缓存保留。
 
@@ -136,9 +136,9 @@ caged-claude/
 │   ├── unit/                     # 无 Docker 的单元测试
 │   ├── integration/              # 隔离的 Docker 集成测试
 │   └── fixtures/                 # 测试服务与替身
-├── config/                       # 本机私有配置、Claude 凭证、宿主桥密钥，Git 忽略
+├── config/                       # 本机应用和代理配置，Git 忽略
 ├── config.example/               # 可提交的配置模板
-├── state/                        # 每个实例的 Linux 环境、浏览器资料、宿主桥 socket，Git 忽略
+├── state/                        # 实例登记、Linux 环境、应用资料和宿主桥状态，Git 忽略
 └── docs/
     ├── configuration.md          # 配置参考
     ├── architecture.md           # 本文

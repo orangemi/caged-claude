@@ -31,7 +31,7 @@ DEFAULTS = {
     'mixed_port': 17890,
     'debug_port': 9222,
     'workspace': [],
-    # None means config/claude/<instance>; resolved once the instance is known.
+    # None means <state.dir>/<instance>/claude.
     'claude_config_dir': None,
     'claude_sudo': True,
     'state_dir': str(ROOT / 'state'),
@@ -273,17 +273,6 @@ def resolve(argv=None, environ=None):
             raise ConfigError('Workspace would mask a container system directory: ' + str(folder))
         if folder not in args.workspace:
             args.workspace.append(folder)
-    if args.claude_config_dir is None:
-        args.claude_config_dir = ROOT / 'config' / 'claude' / args.instance
-    if not isinstance(args.claude_config_dir, (str, Path)) or not str(args.claude_config_dir).strip():
-        raise ConfigError('claude.config_dir must be a directory path')
-    state = Path(args.claude_config_dir).expanduser()
-    state_base = args.settings.parent if args.sources['claude_config_dir'] == 'config' else Path.cwd()
-    state = (state if state.is_absolute() else state_base / state).resolve()
-    private_root = (ROOT / 'config').resolve()
-    if private_root not in state.parents or any(char in str(state) for char in (',', ':', '\n', '\r')):
-        raise ConfigError('Claude state must be a subdirectory of the project config/ directory')
-    args.claude_config_dir = state
     args.claude_sudo = boolean(args.claude_sudo, 'claude.sudo')
     args.host_bridge = boolean(args.host_bridge, 'host_bridge.enabled')
     if args.host_bridge_user is None:
@@ -316,6 +305,21 @@ def resolve(argv=None, environ=None):
     if any(char in str(folder) for char in (',', ':', '\n', '\r')):
         raise ConfigError('state.dir cannot contain comma, colon or newlines')
     args.state_dir = folder
+    claude_root = folder / args.instance / 'claude'
+    if args.claude_config_dir is None:
+        args.claude_config_dir = claude_root
+        args.sources['claude_config_dir'] = 'default'
+    if not isinstance(args.claude_config_dir, (str, Path)) or not str(args.claude_config_dir).strip():
+        raise ConfigError('claude.config_dir must be a directory path')
+    credentials = Path(args.claude_config_dir).expanduser()
+    base = args.settings.parent if args.sources['claude_config_dir'] == 'config' else Path.cwd()
+    credentials = (credentials if credentials.is_absolute() else base / credentials).resolve()
+    in_state = credentials == claude_root or claude_root in credentials.parents
+    in_legacy_config = (args.sources['claude_config_dir'] != 'default'
+                        and (ROOT / 'config').resolve() in credentials.parents)
+    if not (in_state or in_legacy_config) or any(char in str(credentials) for char in (',', ':', '\n', '\r')):
+        raise ConfigError('claude.config_dir must be within the instance claude state directory or project config/')
+    args.claude_config_dir = credentials
     if args.state_backend not in ('auto', 'dir', 'image'):
         raise ConfigError('state.backend must be auto, dir or image')
     # An explicit backend must match an existing environment's; auto adopts it.

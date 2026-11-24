@@ -15,10 +15,13 @@ This module owns the layout, the marker that ties state to its instance,
 seeding and the mount list.
 """
 import contextlib
+import errno
 import fcntl
 import json
 import os
 from pathlib import Path
+import shutil
+import tempfile
 import time
 import uuid
 from . import docker as engine, images
@@ -34,7 +37,10 @@ SYSTEM = ('etc', 'usr', 'var', 'opt', 'srv', 'root')
 HOME = '/home/claude'
 CLAUDE_STATE = HOME + '/.claude'
 RUNTIME = '/caged-runtime'
-REGISTRY = ROOT / 'config' / 'instances'
+# Keep the registry available even when the configured state disk is missing.
+REGISTRY = ROOT / 'state' / '.instances'
+LEGACY_REGISTRY = ROOT / 'config' / 'instances'
+PRIVATE_DIRECTORIES = ('claude', 'bridge', 'bridge-host')
 # Files Docker generates inside /etc for every container.
 DOCKER_MANAGED = ('etc/hosts', 'etc/hostname', 'etc/resolv.conf')
 BACKENDS = ('dir', 'image')
@@ -100,7 +106,7 @@ class InstanceState:
     """The dir backend: the layout as plain host directories."""
     backend = 'dir'
     # Entries that may precede the marker (see validate).
-    allowed_before_marker = (LOCK, 'browser', 'bridge', 'system', 'home', MARKER + '.tmp')
+    allowed_before_marker = (LOCK, 'browser', *PRIVATE_DIRECTORIES, 'system', 'home', MARKER + '.tmp')
 
     def __init__(self, state_dir, instance):
         self.instance = instance
@@ -122,14 +128,21 @@ class InstanceState:
     def registry(self):
         return REGISTRY / (self.instance + '.json')
 
+    @property
+    def legacy_registry(self):
+        return LEGACY_REGISTRY / self.registry.name
+
     def marker(self):
         return read_marker(self.root)
 
     def registered(self):
-        try:
-            return json.loads(self.registry.read_text())
-        except FileNotFoundError:
-            return None
+        # The last lookup covers publication while a reader checks the old path.
+        for path in (self.registry, self.legacy_registry, self.registry):
+            try:
+                return json.loads(path.read_text())
+            except FileNotFoundError:
+                continue
+        return None
 
     def validate(self):
         """Refuse to reuse, or silently replace, a missing or foreign state.
@@ -172,7 +185,7 @@ class InstanceState:
         with self.locked():
             marker = self.validate()
             if marker is not None:
-                if self.registered() is None:  # interrupted between marker and registry
+                if not self.registry.is_file():
                     self._register(marker['id'])
                 return
             self._remove_leftovers(image)
@@ -272,6 +285,12 @@ mv /state/{MARKER}.tmp /state/{MARKER}'''
     def _register(self, seed_id):
         REGISTRY.mkdir(parents=True, exist_ok=True, mode=0o700)
         write_private(self.registry, {'state': str(self.root), 'id': seed_id})
+        try:
+            legacy = json.loads(self.legacy_registry.read_text())
+        except FileNotFoundError:
+            return
+        if legacy.get('id') == seed_id:
+            self.legacy_registry.unlink(missing_ok=True)
 
 
 class ImageState(InstanceState):
@@ -284,7 +303,7 @@ class ImageState(InstanceState):
     only attaches and detaches loop devices; the cage containers themselves
     stay unprivileged."""
     backend = 'image'
-    allowed_before_marker = (LOCK, 'browser', 'bridge', DISK + '.tmp')
+    allowed_before_marker = (LOCK, 'browser', *PRIVATE_DIRECTORIES, DISK + '.tmp')
 
     def __init__(self, state_dir, instance, size=None):
         super().__init__(state_dir, instance)
@@ -312,7 +331,7 @@ class ImageState(InstanceState):
             if marker is None:
                 self._remove_leftovers(image)
                 marker = self._seed(image)
-            elif self.registered() is None:
+            elif not self.registry.is_file():
                 self._register(marker['id'])
             self._serve(marker['filesystem'], marker['id'])
             self._run('mkdir -p /state/browser && chmod 700 /state/browser', image, timeout=60)
@@ -446,16 +465,37 @@ def write_private(path, value):
     os.rename(temporary, path)
 
 
-def adopt_legacy_credentials(args):
-    """Move the pre-stateful config/.claude to the configured instance's directory.
+def adopt_legacy_directory(source, target):
+    """Publish a legacy directory only if the destination is still unused."""
+    if target.exists() or target.is_symlink() or not source.is_dir():
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not source.is_symlink():
+        try:
+            source.rename(target)
+            return True
+        except OSError as error:
+            if error.errno != errno.EXDEV:
+                raise
+    # Across filesystems, publish a complete copy and keep the old directory.
+    with tempfile.TemporaryDirectory(prefix='.migration-', dir=target.parent) as staging:
+        copy = Path(staging) / target.name
+        shutil.copytree(source, copy, symlinks=True)
+        copy.chmod(0o700)
+        copy.rename(target)
+    return True
 
-    Only an instance chosen by settings (file, env or default) adopts it, so
-    throwaway --instance runs such as audits and tests never take the login."""
-    legacy = ROOT / 'config' / '.claude'
+
+def adopt_legacy_credentials(args):
+    """Prefer the instance's old profile to the original shared profile."""
     target = Path(args.claude_config_dir)
-    if (args.sources.get('claude_config_dir') == 'default' and args.sources.get('instance') != 'cli'
-            and legacy.is_dir() and not target.exists()):
-        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.rename(legacy, target)
-        print(f'Moved Claude credentials from {legacy} to {target}.', flush=True)
+    if args.sources.get('claude_config_dir') == 'default':
+        legacy = [ROOT / 'config' / 'claude' / args.instance]
+        # A throwaway --instance must never claim the shared login.
+        if args.sources.get('instance') != 'cli':
+            legacy.append(ROOT / 'config' / '.claude')
+        for source in legacy:
+            if adopt_legacy_directory(source, target):
+                print(f'Migrated Claude state from {source} to {target}.', flush=True)
+                break
     target.mkdir(parents=True, exist_ok=True, mode=0o700)

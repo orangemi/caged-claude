@@ -28,13 +28,13 @@ class ClaudeContainer(unittest.TestCase):
 
     def exercise(self,backend):
         instance='caged-persistence-'+uuid.uuid4().hex[:10]
-        credentials=ROOT/'config'/('.fixture-'+uuid.uuid4().hex)
         environments=Path(tempfile.mkdtemp(prefix='caged-state-'))
         with tempfile.TemporaryDirectory(prefix='caged-shared-') as folder:
             workspace=Path(folder).resolve()
             args=resolve(['--settings',str(ROOT/'config.example/app.yaml'),'--instance',instance,
-                          '--workspace',str(workspace),'--claude-config-dir',str(credentials),
+                          '--workspace',str(workspace),
                           '--state-dir',str(environments),'--state-backend',backend],environ={})
+            credentials=environments/instance/'claude'
             names = Instance(instance)
             session=Session(args)
             session.network_container_id,session.network_session_id='offline-fixture','offline-session'
@@ -107,7 +107,7 @@ class ClaudeContainer(unittest.TestCase):
             finally:
                 engine.stop_managed(names.claude)
                 session.state.release()  # image: detach before the file is removed
-                shutil.rmtree(credentials,ignore_errors=True)
+                session.state.registry.unlink(missing_ok=True)
                 # Seeded files are root-owned; remove them from a container.
                 engine.call(['docker','run','--rm','--network','none','--user','0:0','--entrypoint','/bin/sh',
                              '--mount',f'type=bind,src={environments},dst=/state',images.IMAGES['claude'],

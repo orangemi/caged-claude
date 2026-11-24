@@ -1,7 +1,6 @@
 """Exercise detached startup, rollback and stop against real Docker containers."""
 import os
 from pathlib import Path
-import shutil
 import socket
 import subprocess
 import sys
@@ -21,8 +20,8 @@ class ProcessLifecycle(unittest.TestCase):
         self.names = Instance(self.instance)
         self.temp = tempfile.TemporaryDirectory(prefix='caged-workspace-')
         self.workspace = Path(self.temp.name).resolve()
-        self.state = ROOT / 'config' / ('.fixture-' + uuid.uuid4().hex)
         self.environments = tempfile.TemporaryDirectory(prefix='caged-state-')
+        self.state = Path(self.environments.name) / self.instance / 'claude'
         self.log = tempfile.TemporaryFile(mode='w+')
         with socket.socket() as server:
             server.bind(('127.0.0.1', 0))
@@ -34,7 +33,7 @@ class ProcessLifecycle(unittest.TestCase):
         if fail:env['CAGED_TEST_FAIL_CLAUDE']='1'
         result=subprocess.run([sys.executable, '-u', str(ROOT/'tests/fixtures/lifecycle_launcher.py'), action,
             '--settings',str(ROOT/'config.example/app.yaml'),'--port',str(self.port),'--instance',self.instance,
-            '--workspace',str(self.workspace),'--claude-config-dir',str(self.state),
+            '--workspace',str(self.workspace),
             '--state-dir',self.environments.name],
             env=env,stdin=subprocess.DEVNULL,stdout=self.log,stderr=subprocess.STDOUT,timeout=50)
         return result.returncode
@@ -55,7 +54,6 @@ class ProcessLifecycle(unittest.TestCase):
         self.log.close()
         self.temp.cleanup()
         self.environments.cleanup()
-        if self.state.exists():shutil.rmtree(self.state)
 
     def test_start_returns_and_all_three_containers_share_the_gateway(self):
         self.assertEqual(self.launch('start'),0,self.diagnostic())

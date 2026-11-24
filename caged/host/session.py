@@ -230,12 +230,13 @@ class Session:
 
     def prepare_state(self):
         """Credentials, the seeded environment and the browser profile, before either app starts."""
-        stateful.adopt_legacy_credentials(self.args)
         images.build('claude')  # also the image a new environment is seeded from
         self.state.ensure(images.IMAGES['claude'])
         self.state.prepare_browser()
-        if self.args.host_bridge:
-            hostbridge.prepare(self.state)
+        with self.state.locked():
+            stateful.adopt_legacy_credentials(self.args)
+            if self.args.host_bridge:
+                hostbridge.prepare(self.state)
 
     def start_claude(self):
         if not self.network_running():

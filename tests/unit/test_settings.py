@@ -323,9 +323,15 @@ class Settings(unittest.TestCase):
                 self.parse('--workspace',protected)
         args=self.parse()
         self.assertEqual(args.workspace,[])
-        self.assertEqual(args.claude_config_dir,ROOT/'config'/'claude'/'caged-claude')
-        self.assertEqual(self.parse('--instance','other').claude_config_dir,ROOT/'config'/'claude'/'other')
+        self.assertEqual(args.claude_config_dir,ROOT/'state'/'caged-claude'/'claude')
+        self.assertEqual(self.parse('--instance','other').claude_config_dir,ROOT/'state'/'other'/'claude')
         self.assertEqual(args.state_dir,ROOT/'state')
+        legacy = ROOT/'config'/'custom-profile'
+        self.assertEqual(self.parse('--claude-config-dir',str(legacy)).claude_config_dir,legacy)
+        profile = args.claude_config_dir/'custom-profile'
+        self.assertEqual(self.parse('--claude-config-dir',str(profile)).claude_config_dir,profile)
+        with self.assertRaises(ConfigError):
+            self.parse('--claude-config-dir',str(args.claude_config_dir.parent/'bridge-host'))
 
     def test_browser_ui_defaults_to_http_and_publishes_only_the_chosen_port(self):
         from caged.runtime.network.firewall import firewall_rules
@@ -423,6 +429,7 @@ class Settings(unittest.TestCase):
         args=self.parse()
         self.assertIs(args.claude_sudo,False)
         self.assertEqual(args.state_dir,self.folder/'environments')
+        self.assertEqual(args.claude_config_dir,args.state_dir/args.instance/'claude')
         self.assertIs(self.parse(env={'CAGED_CLAUDE_CLAUDE_SUDO':'yes'}).claude_sudo,True)
         self.assertIs(self.parse('--claude-sudo','true').claude_sudo,True)
         self.assertEqual(self.parse('--state-dir',str(self.folder/'cli')).state_dir,self.folder/'cli')
