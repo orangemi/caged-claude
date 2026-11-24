@@ -29,5 +29,5 @@ ENV HOME=/home/claude CLAUDE_CONFIG_DIR=/home/claude/.claude DISABLE_AUTOUPDATER
 WORKDIR /home/claude
 # Not `docker run --init`: Docker mounts its init at /sbin/docker-init, which
 # the persisted /usr mount hides (merged-usr). The runtime ships its own.
-ENTRYPOINT ["/usr/bin/python3", "/caged-runtime/caged/runtime/init.py", "/bin/bash", "/caged-runtime/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/python3", "/caged-runtime/caged/runtime/init.py", "--agent", "claude", "/bin/bash", "/caged-runtime/entrypoint.sh"]
 CMD ["sleep", "infinity"]
