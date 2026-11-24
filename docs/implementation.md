@@ -266,16 +266,18 @@ IPv6 的输入、转发、输出也默认拒绝，仅允许回环。IPv4 输入�
 
 可选的 `workspace` 支持路径或路径列表，经过展开和规范化后，以相同绝对路径读写挂载到两个应用；首项是工作目录。设置缺省时不挂载任何 workspace。Claude 的 HOME 是 `/home/claude`，浏览器的是 `/config`。不会递归修改 workspace 的属主，也不会隐式共享 Mac 主目录。系统目录、持久化的状态挂载（`/var`、`/opt`、`/srv`、`/root`、`/home/claude`）和只读运行时 `/caged-runtime` 不能被 workspace 覆盖。
 
-Claude 凭证默认绑定 `<项目>/config/claude/<实例>` 到容器 `/home/claude/.claude`，并设置 `CLAUDE_CONFIG_DIR=/home/claude/.claude`。这使凭证 `.credentials.json`、设置、会话/记忆，以及平时单独存放的 `.claude.json` 全部落在同一个持久化绑定中。不会自动复制 Mac Keychain；用户首次通过 `./cage claude` 登录。
+Claude 凭证默认绑定 `<state.dir>/<实例>/claude` 到容器 `/home/claude/.claude`，并设置 `CLAUDE_CONFIG_DIR=/home/claude/.claude`。凭证 `.credentials.json`、设置、会话、记忆及 `.claude.json` 都保存在这个目录中。新实例通过 `./cage claude` 登录。
 
-可选 `claude.config_dir` 只能指向本项目被忽略的 `config/` 下的子目录。状态目录权限为 `700`，必要的属主调整只限该专用目录。构建上下文使用白名单，私有配置和授权目录不会上传给镜像构建器。镜像的软件安装/拉取由 Docker 构建器完成，运行后的两个应用才使用共享网关的受控出口。
+`claude.config_dir` 可使用实例 `claude/` 目录或其子目录，兼容原来显式配置的项目 `config/` 子目录。状态目录权限为 `700`，必要的属主调整只限该专用目录。镜像构建上下文通过白名单排除私有配置和授权目录。Docker 构建器安装软件和拉取镜像，应用启动后使用共享网关的受控出口。
 
 ### 9.3 数据放在哪里
 
 | 数据 | 保存位置 | 清理方式 |
 | --- | --- | --- |
 | 应用启动配置 | 项目 `config/app.yaml` | Git 忽略；会话结束后保留，修改后重启读取 |
-| Claude 授权、设置、会话与记忆 | 默认项目 `config/claude/<实例>` 绑定到容器 `/home/claude/.claude` | `./cage down`、容器重建和环境 `reset` 后都保留 |
+| Claude 授权、设置、会话与记忆 | `<state.dir>/<实例>/claude` 绑定到容器 `/home/claude/.claude` | `./cage down` 和容器重建后保留 |
+| 宿主桥的主机密钥与日志 | `<state.dir>/<实例>/bridge-host` | 由宿主监听器使用，与容器内的只读桥接挂载分开 |
+| 实例登记 | `<项目>/state/.instances/<实例>.json` | 在 `state.dir` 指定的磁盘不可用时仍可校验 |
 | Claude 的系统与 HOME | `state/<实例>/system`、`state/<实例>/home`，分别绑定到 `/etc`、`/usr`、`/var`、`/opt`、`/srv`、`/root` 与 `/home/claude` | 实时写在宿主；容器删除、Docker 重装后保留 |
 | 明示 workspace 文件 | 原宿主绝对路径 | 两个应用访问同一份文件；宿主修改和容器修改互相可见 |
 | 代理配置快照 | 项目 `config/mihomo.yaml`，从 Mac 配置完整复制 | 权限 `600`、Git 忽略；会话结束后保留，不自动同步源文件 |

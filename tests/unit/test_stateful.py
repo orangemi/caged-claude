@@ -1,4 +1,5 @@
 """State directory layout, markers, seeding and refusal to overwrite."""
+import errno
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -48,9 +49,10 @@ class StateDirectory(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         base = Path(self.temp.name)
-        registry = patch.object(stateful, 'REGISTRY', base / 'config' / 'instances')
-        registry.start()
-        self.addCleanup(registry.stop)
+        registries = patch.multiple(stateful, REGISTRY=base / 'state' / '.instances',
+                                    LEGACY_REGISTRY=base / 'config' / 'instances')
+        registries.start()
+        self.addCleanup(registries.stop)
         self.state = stateful.InstanceState(base / 'state', 'fixture')
 
     def ensure(self, docker):
@@ -97,6 +99,24 @@ class StateDirectory(unittest.TestCase):
         with self.assertRaisesRegex(stateful.StateError, 'unavailable'):
             self.ensure(docker)
         self.assertEqual(docker.scripts, [])
+
+    def test_legacy_registry_still_guards_an_external_disk_and_migrates_when_it_returns(self):
+        self.ensure(FakeDocker())
+        legacy = self.state.legacy_registry
+        legacy.parent.mkdir(parents=True)
+        self.state.registry.rename(legacy)
+        missing = stateful.InstanceState(self.state.root.parent / 'missing-disk', 'fixture')
+        with self.assertRaisesRegex(stateful.StateError, 'unavailable'):
+            missing.validate()
+        self.assertTrue(legacy.is_file())
+
+        docker = FakeDocker()
+        self.ensure(docker)
+        self.assertEqual(docker.scripts, [])
+        self.assertFalse(legacy.exists())
+        self.assertEqual(self.state.registered()['id'], self.state.marker()['id'])
+        with self.assertRaisesRegex(stateful.StateError, 'unavailable'):
+            missing.validate()
 
     def test_foreign_or_unmarked_content_is_refused(self):
         self.ensure(FakeDocker())
@@ -220,10 +240,10 @@ class ImageBackend(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
-        for target, value in ((stateful, 'REGISTRY'),):
-            patcher = patch.object(target, value, self.base / 'config' / 'instances')
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        registries = patch.multiple(stateful, REGISTRY=self.base / 'state' / '.instances',
+                                    LEGACY_REGISTRY=self.base / 'config' / 'instances')
+        registries.start()
+        self.addCleanup(registries.stop)
         build = patch.object(stateful.images, 'build', lambda *args, **kwargs: None)
         build.start()
         self.addCleanup(build.stop)
@@ -345,19 +365,59 @@ class LegacyCredentials(unittest.TestCase):
             root = Path(temporary)
             (root / 'config' / '.claude').mkdir(parents=True)
             (root / 'config' / '.claude' / '.credentials.json').write_text('{}')
-            target = root / 'config' / 'claude' / 'caged-claude'
+            target = root / 'state' / 'caged-claude' / 'claude'
             args = SimpleNamespace(claude_config_dir=target, instance='caged-claude',
                                    sources={'claude_config_dir': 'default', 'instance': 'config'})
             with patch.object(stateful, 'ROOT', root):
                 stateful.adopt_legacy_credentials(args)
                 self.assertEqual((target / '.credentials.json').read_text(), '{}')
                 self.assertFalse((root / 'config' / '.claude').exists())
-                other = SimpleNamespace(claude_config_dir=root / 'config' / 'claude' / 'other', instance='other',
+                other = SimpleNamespace(claude_config_dir=root / 'state' / 'other' / 'claude', instance='other',
                                         sources={'claude_config_dir': 'default', 'instance': 'cli'})
                 (root / 'config' / '.claude').mkdir()
                 stateful.adopt_legacy_credentials(other)
                 self.assertTrue((root / 'config' / '.claude').is_dir(), 'a throwaway --instance must not adopt it')
                 self.assertTrue(other.claude_config_dir.is_dir())
+
+    def test_instance_profile_migrates_even_when_selected_on_the_cli(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'config' / 'claude' / 'fixture'
+            source.mkdir(parents=True, mode=0o700)
+            (source / 'settings.json').write_text('{}')
+            shared = root / 'config' / '.claude'
+            shared.mkdir()
+            target = root / 'state' / 'fixture' / 'claude'
+            args = SimpleNamespace(claude_config_dir=target, instance='fixture',
+                                   sources={'claude_config_dir': 'default', 'instance': 'cli'})
+            with patch.object(stateful, 'ROOT', root):
+                stateful.adopt_legacy_credentials(args)
+                source.mkdir()
+                (source / 'settings.json').write_text('{"legacy": true}')
+                stateful.adopt_legacy_credentials(args)
+            self.assertEqual((target / 'settings.json').read_text(), '{}')
+            self.assertEqual((source / 'settings.json').read_text(), '{"legacy": true}')
+            self.assertTrue(shared.is_dir())
+
+    def test_cross_filesystem_migration_publishes_a_private_copy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, target = root / 'legacy', root / 'state' / 'claude'
+            source.mkdir()
+            (source / 'profile').write_text('fixture')
+            rename = Path.rename
+
+            def cross_device_once(path, destination):
+                if path == source:
+                    raise OSError(errno.EXDEV, 'different filesystems')
+                return rename(path, destination)
+
+            with patch.object(Path, 'rename', cross_device_once):
+                self.assertTrue(stateful.adopt_legacy_directory(source, target))
+            self.assertEqual((target / 'profile').read_text(), 'fixture')
+            self.assertEqual(target.stat().st_mode & 0o777, 0o700)
+            self.assertTrue(source.is_dir())
+            self.assertEqual(list(target.parent.iterdir()), [target])
 
 
 if __name__ == '__main__':

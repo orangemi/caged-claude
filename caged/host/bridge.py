@@ -40,7 +40,7 @@ class Plan:
         if self.transport not in ('unix', 'tcp') or (self.transport == 'tcp' and not 1024 <= self.port <= 65535):
             raise BridgeError('Plan transport must be unix, or tcp with a port from 1024 to 65535')
         self.bridge = Path(data['bridge'])     # state/<instance>/bridge, read-only in the container
-        self.config = Path(data['config'])     # config/host-bridge/<instance>, host only
+        self.config = Path(data['config'])     # state/<instance>/bridge-host, host only
         for path in (self.bridge, self.config):
             if not path.is_absolute():
                 raise BridgeError('Plan paths must be absolute')

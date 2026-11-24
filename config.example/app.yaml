@@ -35,9 +35,9 @@ browser:
 # workspace:
 #   - /Users/yourname/Projects/your-project
 
-# 可选。Claude 凭证默认单独保存在本项目 config/claude/<实例>，容器内为 /home/claude/.claude。
+# 可选。Claude 状态默认保存在 <state.dir>/<实例>/claude，容器内为 /home/claude/.claude。
 # claude:
-#   config_dir: claude/my-instance  # 只能是本项目 config/ 下的子目录。
+#   config_dir: ../state/caged-claude/claude/profile  # 可用该实例 claude/ 下的子目录。
 #   sudo: true                      # 默认 true：claude-user 可免密码 sudo；false 时只能从宿主 ./cage shell --root。
 
 # 可选。宿主桥：笼子里 `ssh host` 回到本机，默认开启。开启时笼子里的任何进程都能以你的身份在宿主上执行命令。

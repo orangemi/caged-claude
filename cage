@@ -172,7 +172,7 @@ launch() {
         set -- "$@" -e "$name"
     done
     if [ -n "$linux" ]; then
-        # Files the launcher creates (config/.claude) stay owned by the caller.
+        # Files the launcher creates in state/ stay owned by the caller.
         socket_group=$(stat -c %g "$sock")
         set -- "$@" --user "$(id -u):$(id -g)" --group-add "$socket_group"
     fi
