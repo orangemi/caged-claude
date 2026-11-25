@@ -57,6 +57,7 @@ class Settings(unittest.TestCase):
         del self.data['ports']
         self.write()
         args = self.parse()
+        self.assertEqual(args.bootstrap_dns, 'https://1.1.1.1/dns-query')
         self.assertEqual(args.dns_upstream, 'https://1.1.1.1/dns-query')
         self.assertEqual((args.locale, args.language, args.languages), ('en_US.UTF-8', 'en-US', ['en-US', 'en']))
         self.assertEqual((args.puid, args.pgid, args.shm_size), (os.getuid(), os.getgid(), '1g'))
@@ -79,6 +80,17 @@ class Settings(unittest.TestCase):
         args = self.parse('--language', 'ja-JP', '--port', '6789',
                           env={'CAGED_CLAUDE_LANGUAGE': 'invalid environment value', 'CAGED_CLAUDE_PORT': 'invalid'})
         self.assertEqual((args.language, args.port), ('ja-JP', 6789))
+
+    def test_bootstrap_dns_uses_config_precedence_independently_of_runtime_dns(self):
+        self.data['proxy']['bootstrap_dns'] = 'https://223.5.5.5/dns-query'
+        self.write()
+        env = {'CAGED_CLAUDE_BOOTSTRAP_DNS': 'https://8.8.8.8/dns-query'}
+        self.assertEqual(self.parse().bootstrap_dns, 'https://223.5.5.5/dns-query')
+        self.assertEqual(self.parse(env=env).bootstrap_dns, 'https://8.8.8.8/dns-query')
+        args = self.parse('--bootstrap-dns', 'https://1.0.0.1/dns-query', env=env)
+        self.assertEqual(args.bootstrap_dns, 'https://1.0.0.1/dns-query')
+        self.assertEqual(runtime_policy(args)['dns_upstream'], 'https://9.9.9.9/dns-query')
+        self.assertNotIn('bootstrap_dns', runtime_policy(args))
 
     def test_explicit_invalid_optional_values_do_not_silently_use_defaults(self):
         self.data['browser']['locale'] = None
@@ -234,7 +246,10 @@ class Settings(unittest.TestCase):
                  ('--locale', 'bad locale'), ('--puid', '-1'), ('--expected-country', 'wrong'),
                  ('--dns-upstream', 'http://1.1.1.1/dns-query'),
                  ('--dns-upstream', 'https://127.0.0.1/dns-query'),
-                 ('--dns-upstream', 'https://1.1.1.1/dns-query#DIRECT')]
+                 ('--dns-upstream', 'https://1.1.1.1/dns-query#DIRECT'),
+                 ('--bootstrap-dns', 'https://dns.google/dns-query'),
+                 ('--bootstrap-dns', 'https://198.18.0.1/dns-query'),
+                 ('--bootstrap-dns', 'https://224.0.0.1/dns-query')]
         for flag, value in cases:
             with self.subTest(flag=flag, value=value):
                 with self.assertRaises(ConfigError):

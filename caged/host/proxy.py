@@ -1,8 +1,11 @@
 """Host YAML adapter and public IPv4 pinning for a selected node."""
+from contextlib import closing
 import copy
+from http.client import HTTPSConnection, HTTPException
 import ipaddress
 import json
-import socket
+import ssl
+from urllib.parse import urlsplit
 from . import yamlfile
 from .errors import CageError
 
@@ -31,18 +34,69 @@ def load_node(path, name=None):
     return node
 
 
-def pin_node(node):
+def resolve_node_addresses(server, resolver):
+    try:
+        from dns import exception, message, rcode, rdatatype
+    except ImportError:
+        raise CageError('Resolving a proxy hostname requires dnspython. Run ./cage normally or install dnspython for CAGED_NATIVE=1.') from None
+
+    try:
+        query = message.make_query(server, rdatatype.A, id=0)
+    except (exception.DNSException, UnicodeError):
+        raise CageError('The selected proxy node has an invalid hostname. Check its server field in the proxy YAML.') from None
+
+    endpoint = urlsplit(resolver)
+    media_type = 'application/dns-message'
+    hint = 'Check proxy.bootstrap_dns in app.yaml or choose another HTTPS DNS service with --bootstrap-dns.'
+    try:
+        # Connect to the configured IP with certificate verification and without system proxy settings.
+        with closing(HTTPSConnection(endpoint.hostname, endpoint.port, timeout=5,
+                                     context=ssl.create_default_context())) as connection:
+            connection.request('POST', endpoint.path, body=query.to_wire(),
+                               headers={'Content-Type': media_type, 'Accept': media_type})
+            with connection.getresponse() as response:
+                if response.status != 200:
+                    raise CageError(f'The HTTPS DNS service returned HTTP {response.status}. {hint}')
+                if response.headers.get_content_type() != media_type:
+                    raise CageError(f'The HTTPS DNS service returned an unexpected content type. {hint}')
+                wire = response.read(65536)
+    except ssl.SSLCertVerificationError:
+        raise CageError(f'Could not verify the HTTPS DNS service certificate. {hint}') from None
+    except (OSError, HTTPException):
+        raise CageError(f'Could not reach the HTTPS DNS service to look up the proxy node. {hint}') from None
+
+    try:
+        if len(wire) > 65535:
+            raise exception.FormError()
+        answer = message.from_wire(wire, raise_on_truncation=True)
+        if not query.is_response(answer) or query.question != answer.question:
+            raise exception.FormError()
+        status = answer.rcode()
+        if status == rcode.NXDOMAIN:
+            return []
+        if status != rcode.NOERROR:
+            raise CageError(f'The HTTPS DNS service could not resolve the proxy node ({rcode.to_text(status)}). {hint}')
+        records = answer.resolve_chaining().answer
+    except exception.DNSException:
+        raise CageError(f'The HTTPS DNS service returned an invalid reply to the proxy node lookup. {hint}') from None
+    return [ipaddress.IPv4Address(record.address) for record in records] if records else []
+
+
+def pin_node(node, resolver):
     proxy = copy.deepcopy(node)
     server = str(proxy['server'])
     try:
         address = ipaddress.ip_address(server)
-        addresses = [str(address)] if address.version == 4 else []
     except ValueError:
-        addresses = sorted({row[4][0] for row in socket.getaddrinfo(
-            server, int(proxy['port']), socket.AF_INET, socket.SOCK_STREAM)})
+        addresses = resolve_node_addresses(server, resolver)
         proxy.setdefault('sni', server)
-    addresses = [address for address in addresses if ipaddress.ip_address(address).is_global]
-    if not addresses:
-        raise CageError('The node did not resolve to a public IPv4 address; refusing to use a fake-IP or local address.')
-    proxy['server'] = addresses[0]
+        hint = 'Check its server field in the proxy YAML or select another node with --node.'
+    else:
+        addresses = [address]
+        hint = 'Use a public IPv4 or a hostname in the server field of the proxy YAML.'
+    public = [str(address) for address in addresses
+              if address.version == 4 and address.is_global and not address.is_multicast]
+    if not public:
+        raise CageError(f'The selected proxy node has no usable public IPv4 address. {hint}')
+    proxy['server'] = min(public)
     return proxy

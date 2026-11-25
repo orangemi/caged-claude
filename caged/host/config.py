@@ -19,6 +19,7 @@ PREFIX = 'CAGED_CLAUDE_'
 DEFAULTS = {
     'proxy_file_path': 'mihomo.yaml',
     'instance': 'caged-claude',
+    'bootstrap_dns': 'https://1.1.1.1/dns-query',
     'dns_upstream': 'https://1.1.1.1/dns-query',
     'locale': 'en_US.UTF-8',
     'language': 'en-US',
@@ -58,6 +59,7 @@ FIELDS = {
     'node': ('proxy.node', 'NODE'),
     'proxy_file_path': ('proxy.file_path', 'PROXY_FILE_PATH'),
     'expected_country': ('proxy.expected_country', 'EXPECTED_COUNTRY'),
+    'bootstrap_dns': ('proxy.bootstrap_dns', 'BOOTSTRAP_DNS'),
     'dns_upstream': ('proxy.dns_upstream', 'DNS_UPSTREAM'),
     'timezone': ('browser.timezone', 'TIMEZONE'),
     'locale': ('browser.locale', 'LOCALE'),
@@ -182,7 +184,7 @@ def resolve(argv=None, environ=None):
                 value, source = DEFAULTS[name], 'default'
         setattr(args, name, value)
         args.sources[name] = source
-    for name in ('node', 'timezone', 'locale', 'language', 'instance', 'dns_upstream', 'shm_size'):
+    for name in ('node', 'timezone', 'locale', 'language', 'instance', 'bootstrap_dns', 'dns_upstream', 'shm_size'):
         value = getattr(args, name)
         if not isinstance(value, str) or not value.strip():
             raise ConfigError(name + ' must be a non-empty string')
@@ -332,15 +334,19 @@ def resolve(argv=None, environ=None):
     if not match or (match.group(2) in 'gG' and int(match.group(1)) < 8):
         raise ConfigError('state.size must be at least 8g, such as 64g or 1t')
     args.state_size = match.group(1) + match.group(2).upper()
-    try:
-        url = urlsplit(args.dns_upstream)
-        address = ipaddress.ip_address(url.hostname or '')
-        if (url.scheme != 'https' or address.version != 4 or not address.is_global
-                or url.username or url.password or url.fragment or url.query or not url.path
-                or url.port in (53, 853)):
-            raise ValueError()
-    except ValueError:
-        raise ConfigError('dns_upstream must be an HTTPS DoH URL with a public IPv4 host, path, and no credentials/query/fragment') from None
+    for name in ('bootstrap_dns', 'dns_upstream'):
+        try:
+            url = urlsplit(getattr(args, name))
+            address = ipaddress.IPv4Address(url.hostname or '')
+            if (url.scheme != 'https' or not address.is_global or address.is_multicast
+                    or url.username is not None or url.password is not None or url.fragment or url.query
+                    or not url.path or url.port in (0, 53, 853)):
+                raise ValueError()
+        except ValueError:
+            raise ConfigError(
+                f'proxy.{name} must be a DNS-over-HTTPS URL with a public IPv4 address and a path, '
+                'such as https://1.1.1.1/dns-query. Remove any credentials, query, or fragment.'
+            ) from None
     return args
 
 

@@ -29,7 +29,7 @@ config/mihomo.yaml   # mihomo 节点和凭证
 
 所有启动选项按 **命令行参数 > 环境变量 > `app.yaml` > 内置默认值** 解析，并且只校验最终生效的值。`--help` 列出完整选项。`config.example/app.yaml` 仅启用必选配置，可选项统一注释并注明默认值；需要覆盖默认值时取消对应注释。无默认值的选项缺失、键名拼错或生效的时区/端口非法时，会在启动容器前报错。
 
-可省略的默认项包括节点文件 `mihomo.yaml`、实例名 `caged-claude`、DoH 上游 `https://1.1.1.1/dns-query`、locale `en_US.UTF-8`、语言 `en-US`、跟随启动者的 UID/主 GID、共享内存 `1g`，以及整个 `ports` 块。节点、期望国家和时区仍由配置或覆盖项明确提供。
+可省略的默认项包括节点文件 `mihomo.yaml`、实例名 `caged-claude`、节点引导 DNS 和运行时 DoH 上游 `https://1.1.1.1/dns-query`、locale `en_US.UTF-8`、语言 `en-US`、跟随启动者的 UID/主 GID、共享内存 `1g`，以及整个 `ports` 块。节点、期望国家和时区仍由配置或覆盖项明确提供。
 
 | `app.yaml` 键 | 环境变量 | 命令行参数 |
 | --- | --- | --- |
@@ -37,6 +37,7 @@ config/mihomo.yaml   # mihomo 节点和凭证
 | `proxy.file_path` | `CAGED_CLAUDE_PROXY_FILE_PATH` | `--proxy-file-path` |
 | `proxy.node` | `CAGED_CLAUDE_NODE` | `--node` |
 | `proxy.expected_country` | `CAGED_CLAUDE_EXPECTED_COUNTRY` | `--expected-country` |
+| `proxy.bootstrap_dns` | `CAGED_CLAUDE_BOOTSTRAP_DNS` | `--bootstrap-dns` |
 | `proxy.dns_upstream` | `CAGED_CLAUDE_DNS_UPSTREAM` | `--dns-upstream` |
 | `browser.timezone` | `CAGED_CLAUDE_TIMEZONE` | `--timezone` |
 | `browser.locale` | `CAGED_CLAUDE_LOCALE` | `--locale` |
@@ -74,7 +75,10 @@ CAGED_CLAUDE_TIMEZONE=Asia/Tokyo CAGED_CLAUDE_PORT=3102 ./cage up --port 3103
 
 旧的 `proxy.config`、`CAGED_CLAUDE_PROXY_CONFIG`、`--config` 和 `--proxy-config` 仍作为兼容别名。相同来源同时提供新旧名称时，YAML 和环境变量使用新名称的值；命令行别名按出现顺序取最后一个值。CLI > ENV > YAML > 默认值的优先级不变。
 
-DoH 上游目前要求带路径的 HTTPS 公网 IPv4 URL，例如 `https://1.1.1.1/dns-query`，由程序追加固定节点标识，避免额外的域名引导解析。
+两个 DNS 选项都接受带路径的 HTTPS 公网 IPv4 URL，默认均为 `https://1.1.1.1/dns-query`。
+
+- `proxy.bootstrap_dns` 供启动器通过 HTTPS 查询所选节点域名的 A 记录。启动器校验证书，解析失败就停止启动。节点服务器已经是公网 IPv4 时，跳过这次查询。
+- `proxy.dns_upstream` 供运行时网关使用，DNS 查询经所选节点发送。
 
 UI 只绑定宿主回环。DNS 的 53 端口，以及上游桌面镜像的 3000（HTTP）和 3001（HTTPS），都是内部协议端口，不作为用户偏好覆盖；其他内部服务端口可配置，需互不冲突，也不能占用这三个端口。全局代理、IPv6 阻断和默认拒绝防火墙保持固定的隔离约束。
 
@@ -136,7 +140,7 @@ CLAUDE_CONFIG_DIR=/home/claude/.claude
 | --- | --- |
 | `CAGED_MOUNTS` | 冒号分隔的额外只读目录，用于 `$HOME` 之外的 workspace 或配置文件 |
 | `CAGED_DOCKER_SOCK` | 指定 Docker socket；默认 `/var/run/docker.sock`，Linux 上会使用 `unix://` 形式的 `DOCKER_HOST` |
-| `CAGED_NATIVE=1` | 不用容器，直接用宿主机的 Python 3.9+ 运行（需要 PyYAML） |
+| `CAGED_NATIVE=1` | 不用容器，直接用宿主机的 Python 3.9+ 运行（需要 PyYAML，节点使用域名时还需要 dnspython） |
 
 ## 从 caged-browser 升级
 

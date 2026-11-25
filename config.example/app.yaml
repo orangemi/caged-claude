@@ -5,6 +5,7 @@ proxy:
   # file_path: mihomo.yaml  # 可选，默认 mihomo.yaml，与本应用 YAML 同目录。
   node: "Singapore"
   expected_country: SG  # 两位国家代码；null 或 any 表示不限制国家。
+  # bootstrap_dns: https://1.1.1.1/dns-query  # 可选。启动时解析所选节点的服务器域名。
   # dns_upstream: https://1.1.1.1/dns-query  # 可选，默认此值；使用公网 IPv4 避免额外的 DNS 引导。
 
 # 时区、locale、语言和 UID/GID 同时应用于 browser 与 claude 容器。

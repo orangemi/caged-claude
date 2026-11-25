@@ -4,7 +4,7 @@
 # The host needs only this POSIX sh script and Docker. Everything except
 # `help` and `init` runs the Python launcher (caged/host) inside a small
 # launcher container that drives the host Docker daemon. Set CAGED_NATIVE=1
-# to run the launcher with the host's python3 instead (needs PyYAML).
+# to run the launcher with the host's python3 instead (needs PyYAML and dnspython for node hostnames).
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)

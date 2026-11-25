@@ -39,7 +39,7 @@ class Session:
     def start_network(self):
         engine.ensure_names_available(self.instance.names)
         source = proxy.load_node(self.args.proxy_file_path, self.args.node)
-        selected_proxy = proxy.pin_node(source)
+        selected_proxy = proxy.pin_node(source, self.args.bootstrap_dns)
         # Inside the launcher this would probe the container's own loopback;
         # there docker run reports a busy host port itself.
         if not IN_LAUNCHER:

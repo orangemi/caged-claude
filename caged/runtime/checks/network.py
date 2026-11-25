@@ -98,7 +98,10 @@ def dns_checks():
     # negative response with an authority record requires recursive DNS.
     recursive = dns_query(name='caged-' + uuid.uuid4().hex + '.example.com', kind=16, timeout=12)
     if recursive['rcode'] not in (0, 3) or recursive['answers'] != 0 or recursive['authorities'] < 1:
-        raise RuntimeError('Fresh recursive DNS query did not return a negative response with authority data')
+        raise RuntimeError(
+            'Could not verify DNS through the selected proxy. Check the node connection and the HTTPS DNS service '
+            'set by proxy.dns_upstream.'
+        )
     def public_udp():
         try:
             dns_query('1.1.1.1', timeout=1.5)
