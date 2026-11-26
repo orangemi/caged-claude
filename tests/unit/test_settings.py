@@ -59,7 +59,7 @@ class Settings(unittest.TestCase):
         args = self.parse()
         self.assertEqual(args.bootstrap_dns, ['https://1.1.1.1/dns-query', 'https://223.5.5.5/dns-query'])
         self.assertEqual(args.dns_upstream, ['https://1.1.1.1/dns-query'])
-        self.assertEqual((args.host_tunnel, args.host_proxy_ports), ('warn', [1080, 7890, 7897]))
+        self.assertEqual((args.host_tunnel, args.host_proxy_ports), ('auto', [1080, 7890, 7897]))
         self.assertEqual((args.locale, args.language, args.languages), ('en_US.UTF-8', 'en-US', ['en-US', 'en']))
         self.assertEqual((args.puid, args.pgid, args.shm_size), (os.getuid(), os.getgid(), '1g'))
         self.assertEqual((args.port, args.controller_port, args.mixed_port, args.debug_port), (3002, 9090, 17890, 9222))
@@ -111,7 +111,7 @@ class Settings(unittest.TestCase):
                                                           'CAGED_HOST_PROXY_PORTS': '7890,6152'})
         self.assertEqual((args.host_tunnel, args.host_proxy_ports), ('block', [6152, 7890, 8888]))
         self.assertEqual(runtime_policy(args)['host_proxy_ports'], [6152, 7890, 8888])
-        for flag, value in (('--host-tunnel', 'ignore'), ('--host-proxy-ports', '0'), ('--host-proxy-ports', 'x')):
+        for flag, value in (('--host-tunnel', 'warn'), ('--host-proxy-ports', '0'), ('--host-proxy-ports', 'x')):
             with self.subTest(flag=flag), self.assertRaises(ConfigError):
                 self.parse(flag, value)
 

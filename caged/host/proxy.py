@@ -11,7 +11,6 @@ import re
 import socket
 import ssl
 import subprocess
-import sys
 from urllib.parse import urlsplit
 from . import yamlfile
 from .errors import CageError
@@ -256,23 +255,14 @@ def host_routes(addresses, environ=os.environ):
     return system, routes
 
 
-def check_host_routes(addresses, mode, environ=os.environ):
-    """Warn about (or refuse) a host that sends public traffic through a TUN or VPN.
+def check_host_routes(addresses, environ=os.environ):
+    """{'routes', 'tunnels'}: public addresses this host sends through a TUN or VPN.
 
     Containers reach the node through the host's network, so a host TUN such as
-    Clash/mihomo would carry the node connection instead of the physical network."""
-    if mode == 'allow':
-        return {}
+    Clash/mihomo would carry the node connection instead of the physical network
+    (see dialer.py for how that is avoided)."""
     system, routes = host_routes(addresses, environ)
     pattern = PHYSICAL.get(system)
     tunnels = {address: interface for address, interface in routes.items()
                if pattern and not re.fullmatch(pattern, interface)}
-    if tunnels:
-        detail = ', '.join(f'{address} via {interface}' for address, interface in sorted(tunnels.items()))
-        message = (f'This host sends public traffic through a non-physical interface ({detail}), such as a '
-                   'Clash/mihomo TUN or a VPN, so the connection to the selected node passes through that software.')
-        if mode == 'block':
-            raise CageError(message + ' Turn off the host TUN/VPN, or set proxy.host_tunnel to warn or allow.')
-        print('Warning: ' + message + ' Set proxy.host_tunnel: block to refuse starting, or allow to hide this warning.',
-              file=sys.stderr, flush=True)
     return {'routes': routes, 'tunnels': tunnels}

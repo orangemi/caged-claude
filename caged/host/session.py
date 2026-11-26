@@ -1,12 +1,13 @@
 """One instance owns its container identities, startup checks and cleanup."""
 import json
+import os
 import secrets
 import socket
 import subprocess
 import sys
 import time
 import uuid
-from . import docker as engine, hostbridge, images, proxy, stateful
+from . import dialer, docker as engine, hostbridge, images, proxy, stateful
 from .config import runtime_policy
 from .errors import CageError
 from .instance import Instance
@@ -34,7 +35,8 @@ class Session:
         self.network_container_id = None
         self.network_session_id = None
         self.agent_keys = {role: secrets.token_hex(32) for role in ('browser', 'claude')}
-        self.host_routes = {}
+        self.node_path = {'kind': 'direct'}
+        self.dialer_registered = False
         self.state = stateful.open_state(args)
 
     def start_network(self):
@@ -42,9 +44,11 @@ class Session:
         source = proxy.load_node(self.args.proxy_file_path, self.args.node)
         selected_proxy, addresses = proxy.pin_node(source, self.args.bootstrap_dns,
                                                    proxy.source_resolvers(self.args.proxy_file_path))
-        self.host_routes = proxy.check_host_routes(addresses, self.args.host_tunnel)
         pinned = {'host': None if selected_proxy.get('server') == str(source['server']) else str(source['server']),
                   'addresses': addresses, 'resolved_at': time.time()}
+        self.node_path = self.choose_node_path(selected_proxy, addresses, str(source['server']))
+        selected_proxy, firewall_addresses, extra_mounts = self.gateway_endpoint(selected_proxy, addresses, str(source['server']))
+        pinned['path'] = {key: value for key, value in self.node_path.items() if key != 'check'}
         # Inside the launcher this would probe the container's own loopback;
         # there docker run reports a busy host port itself.
         if not IN_LAUNCHER:
@@ -61,9 +65,10 @@ class Session:
                    '--cap-add', 'NET_ADMIN', '--device', '/dev/net/tun',
                    '--read-only', '--tmpfs', '/run/caged:rw,noexec,nosuid,size=32m',
                    '--tmpfs', '/tmp:rw,noexec,nosuid,size=16m',
-                   '--dns', '127.0.0.1', '-p', self.ui_publish(),
+                   '--dns', '127.0.0.1', '-p', self.ui_publish(), *extra_mounts,
                    '-e', POLICY_ENV + '=' + json.dumps(self.policy), *EMPTY_PROXY_ENV, images.IMAGES['network']]
-        payload = json.dumps({'proxy': selected_proxy, 'addresses': addresses, 'pinned': pinned,
+        payload = json.dumps({'proxy': selected_proxy, 'addresses': firewall_addresses, 'pinned': pinned,
+                              'dialer': {key: self.node_path[key] for key in ('kind', 'socket') if key in self.node_path},
                               'display_name': self.args.node,
                               'session': self.session_id, 'agents': self.agent_keys}) + '\n'
         if self.detached:
@@ -83,10 +88,75 @@ class Session:
         egress = self.check_egress()
         print(f'Network ready: {status["node"]}; exit={egress["country"]}; global; DNS through the node; IPv6 blocked.', flush=True)
 
+    def choose_node_path(self, node, addresses, server):
+        """Direct, or through the host dialer when a host TUN/VPN would carry the
+        node connection (proxy.host_tunnel; see dialer.py)."""
+        mode = self.args.host_tunnel
+        sampled = proxy.check_host_routes(addresses).get('tunnels') or {}
+        # WSL cannot see the Windows routes; only the dialer, running on Windows, can.
+        wait = mode == 'dialer' or (mode == 'auto' and (sampled or os.environ.get('CAGED_HOST_WSL') == '1'))
+        running = dialer.wait_status() if wait else dialer.status()
+        found = ', '.join(f'{address} via {interface}' for address, interface in sorted(sampled.items()))
+        if not found and dialer.tunnel(running):
+            found = f'1.1.1.1 via {dialer.tunnel(running)}'
+        message = (f'This host sends public traffic through a non-physical interface ({found}), such as a '
+                   'Clash/mihomo TUN or a VPN, which would carry the connection to the selected node.')
+        if found and mode == 'block':
+            raise CageError(message + ' Turn off the host TUN/VPN, or set proxy.host_tunnel to auto.')
+        if mode == 'direct' or (mode == 'auto' and not found):
+            if found:
+                print('Warning: ' + message + ' proxy.host_tunnel is direct, so it is used anyway.', file=sys.stderr, flush=True)
+            return {'kind': 'direct'}
+        if not running:
+            problem = 'the host dialer is not running (see state/.dialer/dialer.log)'
+            if mode == 'dialer':
+                raise CageError(f'proxy.host_tunnel is dialer, but {problem}. Start the cage with ./cage.')
+            print(f'Warning: {message} Connecting directly, because {problem}.', file=sys.stderr, flush=True)
+            return {'kind': 'direct'}
+        route, revision = dialer.register(self.args.instance, addresses, node['port'], node.get('sni') or server)
+        self.dialer_registered = True
+        check = dialer.wait_check(self.args.instance, revision)
+        bound, default, interface = check['bound'], check['default'], check.get('interface') or 'the physical interface'
+        if not bound.get('ok'):
+            if default.get('ok') and mode == 'auto':
+                dialer.unregister(self.args.instance)
+                self.dialer_registered = False
+                print(f'Warning: the node answers only through the host\'s default path, not over {interface} '
+                      f'({bound.get("error")}); connecting directly.', file=sys.stderr, flush=True)
+                return {'kind': 'direct'}
+            raise CageError(f'The selected node is not reachable over {interface} ({bound.get("error")}) '
+                            f'nor through the host\'s default path ({default.get("error") or "ok"}). '
+                            'Check the node or choose another with --node.')
+        bound_exit, default_exit = check.get('bound_exit'), check.get('default_exit')
+        exits = f'; host exit {bound_exit} over {interface}' if bound_exit else ''
+        if bound_exit and default_exit and default_exit != bound_exit:
+            exits += f', {default_exit} through the TUN'
+        print(f'Host dialer: node connection bound to {interface}, bypassing {found or "the host routes"}{exits}.', flush=True)
+        path = {'kind': dialer.kind(), 'interface': interface, 'tunnel': found, 'check': check}
+        if path['kind'] == 'unix':
+            path['socket'] = dialer.MOUNT + '/' + dialer.SOCKET
+        return path
+
+    def gateway_endpoint(self, node, addresses, server):
+        """(proxy the gateway's mihomo dials, addresses its firewall allows, extra docker run mounts)."""
+        kind = self.node_path['kind']
+        if kind == 'direct':
+            return node, addresses, []
+        # The node protocol and its TLS stay end to end; only the TCP hop moves to the host.
+        node = {**node, 'sni': node.get('sni') or server}
+        if kind == 'unix':
+            folder = dialer.socket_dir(self.args.instance)
+            # The gateway forwards 127.0.0.1:<port> to the mounted socket and fills in the port.
+            return ({**node, 'server': '127.0.0.1', 'port': 0, 'interface-name': 'lo'}, [],
+                    ['--mount', f'type=bind,src={folder},dst={dialer.MOUNT},readonly'])
+        host = hostbridge.host_address(self.args)
+        return {**node, 'server': host, 'port': dialer.port(self.args.instance)}, [host], []
+
     def attach(self):
         """Use this instance's running gateway and applications without owning them."""
         status, state = self.wait_ready(timeout=5, owner=None)
         self.use_network(status, state)
+        self.node_path = (status.get('pinned') or {}).get('path') or {'kind': 'direct'}
         for name in (self.instance.browser, self.instance.claude):
             current = engine.inspect(name)
             if (not current or not current['State']['Running']
@@ -220,6 +290,8 @@ class Session:
     def expected_mounts(self, role):
         """Destination -> host path of every bind mount of a role's container."""
         mounts = {str(path): str(path) for path in self.args.workspace} if role in ('browser', 'claude') else {}
+        if role == 'gateway' and self.node_path.get('kind') == 'unix':
+            mounts[dialer.MOUNT] = str(dialer.socket_dir(self.args.instance))
         mounts.update({mount.destination: mount.source for mount in self.state_mounts(role) if not mount.volume})
         if role == 'claude':
             mounts.update(self.readonly_mounts())
@@ -412,6 +484,8 @@ class Session:
         run_audit(self, live)
 
     def close(self):
+        if self.dialer_registered:
+            dialer.unregister(self.args.instance)
         for name in (self.instance.claude, self.instance.browser, self.instance.check, self.instance.network):
             try:
                 engine.stop_managed(name, self.session_id)

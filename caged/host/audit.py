@@ -157,6 +157,13 @@ def disposable_drill(session):
             'terminal': terminal, 'browser': browser, 'claude': claude}
 
 
+def node_connection(path):
+    if path.get('kind', 'direct') == 'direct':
+        return '网关直接连接固定的节点地址'
+    return (f'经宿主拨号器（{path["kind"]}）连接，出站绑定物理网卡 {path.get("interface")}'
+            + (f'，绕开宿主 TUN（{path["tunnel"]}）' if path.get('tunnel') else ''))
+
+
 def run_audit(session, live=False):
     instance, options, args = session.instance, session.policy, session.args
     report = {'checked_at': datetime.now(timezone.utc).isoformat(), 'instance': instance.name,
@@ -211,7 +218,8 @@ def run_audit(session, live=False):
                 raise Failed('浏览器或 Claude 使用了网关以外的 Docker 网络')
             return {'firewall': after['ipv4_ipv6_default_deny'], 'direct': direct,
                     'kernel_direct_denied': after['counters']['CAGED_DIRECT'] - before['counters']['CAGED_DIRECT'],
-                    'layout': '浏览器、Claude 与无特权探针只共享网关的网络命名空间'}
+                    'layout': '浏览器、Claude 与无特权探针只共享网关的网络命名空间',
+                    'node_connection': node_connection(session.node_path)}
         record('egress_policy', egress_policy)
 
         record('proxy_transport', lambda: part(network, 'tcp'))

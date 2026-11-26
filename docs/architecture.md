@@ -5,6 +5,7 @@ Caged Claude 由三个容器组成，外加宿主上的一个可选组件：
 ```text
 宿主机
 ├── ./cage（POSIX sh）─▶ launcher 容器（Python 启动器，驱动宿主 Docker）
+├── 宿主拨号器（Go，宿主开着 TUN/VPN 时使用）──绑定物理网卡──▶ 选定的 AnyTLS 节点
 ├── 宿主桥监听进程（python3 + 按需 sshd -i，可选）◀───────────────┐
 │                                                                   │ host.sock（Mac 上为回环 TCP）
 Docker                                                              │
@@ -13,18 +14,32 @@ Docker                                                              │
 └── browser：Chromium，共享 network 的网络命名空间，UI 发布到 127.0.0.1:3002
 ```
 
-- **网络**：claude 和 browser 没有自己的网络，只共享网关的网络栈；所有出口只经过选定节点，失败即断网。宿主桥是唯一的例外：Linux/WSL 上走文件 socket，不经过网络；Mac 上只放行宿主的一个端口。
+- **网络**：claude 和 browser 没有自己的网络，只共享网关的网络栈；所有出口只经过选定节点，失败即断网。宿主开着 TUN/VPN 时，网关到节点的那一跳交给宿主拨号器，见下文“宿主 TUN 与拨号器”。宿主桥是唯一的例外：Linux/WSL 上走文件 socket，不经过网络；Mac 上只放行宿主的一个端口。
 - **状态**：Claude 的 Linux 系统、HOME 和浏览器资料实时保存在宿主 `state/<实例>/`，容器随时可以丢弃。见 [有状态环境设计](stateful-service.md)。
 - **宿主桥**：笼子里 `ssh host` 回到宿主。见 [宿主桥设计](host-bridge.md)。
 - **实现细节**：DNS 路径、防火墙规则、许可与监控、源码入口，见 [实现原理](implementation.md)。
 
 ## 出口验证
 
-启动器只管理容器内网络，不检查或更改宿主的 TUN、系统代理及路由，不调用 sudo。容器内 mihomo 使用所选节点的配置自行拨号，不把 Mac Clash 的监听端口作为上游。
+启动器只管理容器内网络，不更改宿主的 TUN、系统代理及路由，不调用 sudo。容器内 mihomo 使用所选节点的配置自行拨号，不把 Mac Clash 的监听端口作为上游。
 
 启动浏览器前，会实际请求出口检测服务并按 `proxy.expected_country` 核对国家。节点不可用或出口不符合生效策略时，停止本次启动并清理容器。
 
-宿主网络可能影响连接节点的路径、延迟和可用性；出口是否合规始终以容器内的实际出口结果判断。另外，`./cage` 会查看宿主到公网的路由：经过 `utun*` 等非物理网卡时，说明宿主 TUN/VPN 会接管到节点的连接，按 `proxy.host_tunnel` 警告或拒绝启动。节点域名在启动时经 `proxy.bootstrap_dns` 等多个 DoH 服务解析，固定全部公网 IPv4。
+宿主网络可能影响连接节点的路径、延迟和可用性；出口是否合规始终以容器内的实际出口结果判断。节点域名在启动时经 `proxy.bootstrap_dns` 等多个 DoH 服务解析，固定全部公网 IPv4。
+
+## 宿主 TUN 与拨号器
+
+容器的出站连接最终由宿主发起，并按宿主的路由表转发。Clash Verge、mihomo、sing-box 等的 TUN 模式会装上比默认路由更具体的路由，把这些连接截走，再按它自己的规则转发；在用户的规则下，到节点的 AnyTLS 会话常常因此建立失败（实测：经 TUN 握手 5 秒后被断开，绑定物理网卡 0.37 秒完成）。这不会造成泄漏（出口检查仍要求出口是选定节点），但会让网络不通。
+
+宿主拨号器解决这一跳：一个只用标准库写的 Go 小程序（`dialer/`），由 `./cage` 在首次需要时用 Docker 编译并在宿主上启动。它只把 TCP 字节转发到启动器写入 `state/.dialer/routes.json` 的固定节点地址，出站连接绑定物理网卡（macOS `IP_BOUND_IF`、Linux `SO_BINDTODEVICE`、Windows `IP_UNICAST_IF`），绕开按路由劫持的 TUN；选不到物理网卡时拒绝连接，绝不改用未绑定的连接。AnyTLS 及其 TLS 仍在网关的 mihomo 与节点之间端到端完成，拨号器看不到内容。
+
+```text
+网关 mihomo ──TCP──▶ 宿主拨号器 ──绑定 en0 等物理网卡──▶ 节点
+            macOS/Windows：host.docker.internal:<端口>（防火墙只放行这一个端口）
+            Linux：挂载进网关的 Unix socket（网关不再直接连 eth0 以外的任何地址）
+```
+
+启动时，拨号器对每个实例做一次对照：经物理网卡和经宿主默认路由分别与节点做 TLS 握手，并比较两条路径的出口 IP。`proxy.host_tunnel: auto`（默认）在发现宿主 TUN 时启用拨号器：物理网卡能握手就使用；只有默认路由能握手（例如企业 VPN 也拦截绑定网卡的连接）则警告并直连；都不能握手就停止启动并说明原因。`dialer` 总是使用拨号器，`direct` 从不使用（只警告），`block` 发现 TUN 即拒绝启动。一个项目只运行一个拨号器进程，路由清空约 20 秒后自行退出，`./cage status` 显示它的网卡、对照结果与连接计数。
 
 ## 网络边界
 

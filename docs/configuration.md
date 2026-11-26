@@ -84,7 +84,16 @@ CAGED_CLAUDE_TIMEZONE=Asia/Tokyo CAGED_CLAUDE_PORT=3102 ./cage up --port 3103
 - 应答中的全部公网 IPv4（最多 4 个）都会固定：防火墙逐个放行，mihomo 用 fallback 组在这些地址之间切换。节点域名改指其他 IP 后，`./cage status` 会提示，`./cage down && ./cage up` 重新解析。
 - `proxy.dns_upstream`（默认 `https://1.1.1.1/dns-query`）：运行时网关经所选节点访问这些端点。mihomo 同时查询全部端点、采用第一个可用应答，单个端点返回 SERVFAIL 或不可达不会导致解析失败；代价是每个端点都会看到查询。DNS 检查失败时，报错附带每个端点经节点的直接测试结果。
 
-`proxy.host_tunnel` 处理宿主自身的 TUN/VPN。`./cage` 在进入启动器容器前查看宿主到几个公网地址的路由（`CAGED_NATIVE=1` 时还会查看节点地址本身）。出口不是物理网卡（例如 macOS 上的 `utun*`、Linux 上的 `Meta`、`tun*`、`wg*`）时，说明 Clash/mihomo TUN 或 VPN 正在接管公网流量，容器到节点的连接也会经过这些软件。默认 `warn` 只打印警告，`block` 拒绝启动，`allow` 不检查。WSL 只能看到 WSL 虚拟机自己的路由，看不到 Windows 上的 TUN。
+`proxy.host_tunnel` 处理宿主自身的 TUN/VPN。`./cage` 在进入启动器容器前查看宿主到几个公网地址的路由（`CAGED_NATIVE=1` 时还会查看节点地址本身），宿主拨号器也会自行比较。出口不是物理网卡（例如 macOS 上的 `utun*`、Linux 上的 `Meta`、`tun*`、`wg*`）时，说明 Clash/mihomo TUN 或 VPN 正在接管公网流量。
+
+| 取值 | 行为 |
+| --- | --- |
+| `auto`（默认） | 发现宿主 TUN 时经宿主拨号器连接节点（绑定物理网卡）；没有 TUN 时直连 |
+| `dialer` | 总是经拨号器；拨号器不可用或物理网卡连不上节点时停止启动 |
+| `direct` | 从不使用拨号器；发现 TUN 只警告 |
+| `block` | 发现 TUN 即拒绝启动 |
+
+拨号器由 `./cage` 用 Docker 中的 Go 工具链编译（首次约一分钟，需要拉取 `golang:1.23-alpine`），保存在 `state/.dialer/`，日志为 `state/.dialer/dialer.log`。设置 `CAGED_DIALER=0` 可以不编译、不启动它。每个实例在宿主上使用一个端口 43000–43999（按实例名推算，只监听 127.0.0.1）；Linux 上改用挂载进网关的 Unix socket。WSL 上拨号器作为 Windows 程序运行，以绕开 Windows 上的 TUN；这一路径需要 Docker Desktop 提供 `host.docker.internal`，目前未经实测。
 
 `ports.host_proxy`（默认 `[7890, 7897, 1080]`）列出审计时笼子必须连不到的宿主代理端口；`./cage` 还会自动加上宿主当前的系统代理端口（macOS 读 `scutil --proxy`，Linux 读指向本机的 `http_proxy` 等变量）。
 
@@ -149,6 +158,7 @@ CLAUDE_CONFIG_DIR=/home/claude/.claude
 | `CAGED_MOUNTS` | 冒号分隔的额外只读目录，用于 `$HOME` 之外的 workspace 或配置文件 |
 | `CAGED_DOCKER_SOCK` | 指定 Docker socket；默认 `/var/run/docker.sock`，Linux 上会使用 `unix://` 形式的 `DOCKER_HOST` |
 | `CAGED_NATIVE=1` | 不用容器，直接用宿主机的 Python 3.9+ 运行（需要 PyYAML，节点使用域名时还需要 dnspython） |
+| `CAGED_DIALER=0` | 不编译、不启动宿主拨号器（见 `proxy.host_tunnel`） |
 
 ## 从 caged-browser 升级
 

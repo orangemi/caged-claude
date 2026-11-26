@@ -129,7 +129,7 @@ mihomo 自身使用 `eth0` 连接已固定的节点 IP，避免代理连接再�
 
 浏览器和网关的常见代理环境变量都被清空，包括大小写形式的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY`。浏览器不依赖应用是否遵守这些环境变量，主要约束来自共享网络中的 TUN 与防火墙。
 
-Mac 的网络仍承载“连接远端节点”的底层通信，可能影响延迟和可用性。启动器不检查、不关闭、不改写 Mac TUN、系统代理或路由，也不因宿主接口名称拒绝启动；它检查容器里的配置与实际出口结果。
+宿主网络仍承载“连接远端节点”的底层通信，可能影响延迟和可用性。启动器不关闭、不改写宿主 TUN、系统代理或路由。宿主开着 TUN/VPN 时，到节点的那一跳经宿主拨号器、绑定物理网卡发出，见 [架构：宿主 TUN 与拨号器](architecture.md#宿主-tun-与拨号器)。网关这一侧的变化：mihomo 的节点地址改为拨号器端点（macOS/Windows 为 `host.docker.internal:<端口>`，防火墙只放行它；Linux 为网关内 `127.0.0.1` 上的转发口，转发到挂载的 Unix socket，`eth0` 上不放行任何目标），SNI 保持节点域名；多个节点地址由拨号器按顺序尝试，不再使用 fallback 组。
 
 ## 6. DNS 为什么需要单独约束
 
@@ -327,7 +327,7 @@ Claude 凭证默认绑定 `<state.dir>/<实例>/claude` 到容器 `/home/claude/
 
 ## 11. 当前实现的范围
 
-启动会验证 DNS、模式、防火墙、出口策略与两个应用的环境设置，network 内持续监控并续期内核许可。Mac 不需要常驻监督脚本，不修改宿主代理、TUN 和路由；`./cage` 只读取宿主路由与系统代理端口，用于 `proxy.host_tunnel` 和管理接口检查。运行策略是启动快照，宿主应用 YAML 的编辑在重新启动后生效。后台不重复删除网关的完整故障演练；期望国家沿用 `proxy.expected_country`，中国大陆出口始终拒绝；不承诺永久固定公网 IP，周期采样也不代表逐条连接的出口证明。出口定位结果在网关内缓存 6 小时，避免频繁请求第三方定位服务。
+启动会验证 DNS、模式、防火墙、出口策略与两个应用的环境设置，network 内持续监控并续期内核许可。Mac 不需要常驻监督脚本，不修改宿主代理、TUN 和路由；`./cage` 只读取宿主路由与系统代理端口，用于 `proxy.host_tunnel` 和管理接口检查。宿主拨号器随实例存在：路由清空后自行退出，崩溃时网关连不上节点、许可到期断网，`./cage up` 会重新拉起。运行策略是启动快照，宿主应用 YAML 的编辑在重新启动后生效。后台不重复删除网关的完整故障演练；期望国家沿用 `proxy.expected_country`，中国大陆出口始终拒绝；不承诺永久固定公网 IP，周期采样也不代表逐条连接的出口证明。出口定位结果在网关内缓存 6 小时，避免频繁请求第三方定位服务。
 
 本项目的 UDP 策略是经节点转发，与 Claude-Cage 的默认 UDP 阻断策略不同。IPv6 则直接阻断。文件系统隔离根据挂载结构和具体私有路径取证，不是对宿主所有文件逐个做读取测试。
 
@@ -350,6 +350,7 @@ Claude 凭证默认绑定 `<state.dir>/<实例>/claude` 到容器 `/home/claude/
 | [caged/host/shell.py](../caged/host/shell.py)、[enter.py](../caged/host/enter.py)、[claude.py](../caged/host/claude.py)、[logs.py](../caged/host/logs.py) | 共用身份与所有权检查，进入容器 Shell、Claude CLI 或查看日志 |
 | [caged/host/hostbridge.py](../caged/host/hostbridge.py)、[bridge.py](../caged/host/bridge.py)、[caged/runtime/hostpipe.py](../caged/runtime/hostpipe.py) | 宿主桥：launcher 侧的挂载与计划、宿主侧监听与按需启动的 `sshd -i`、容器侧的 socket 中转（见 [宿主桥设计](host-bridge.md)） |
 | [caged/host/audit.py](../caged/host/audit.py) | 11 项取证编排：当前实例或一次性实例，逐项通过/失败/未知 |
+| [dialer](../dialer)、[caged/host/dialer.py](../caged/host/dialer.py) | 宿主拨号器（Go，绑定物理网卡转发到固定节点）与启动器侧的路由登记、对照结果和路径选择 |
 | [caged/runtime/network/main.py](../caged/runtime/network/main.py)、[mihomo.py](../caged/runtime/network/mihomo.py)、[firewall.py](../caged/runtime/network/firewall.py) | 网关生命周期、全局代理与 DNS 配置、防火墙 |
 | [caged/runtime/network/monitor.py](../caged/runtime/network/monitor.py)、[lease.py](../caged/runtime/network/lease.py) | 持续检查、限时许可、退避恢复与人工暂停 |
 | [caged/runtime/agents/environment.py](../caged/runtime/agents/environment.py) | 两个应用的只读签名环境探针 |

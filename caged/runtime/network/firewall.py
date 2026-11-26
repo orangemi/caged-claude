@@ -34,9 +34,8 @@ def host_bridge_rules(host):
 def firewall_rules(addresses, port, host=None, ui_port=BROWSER_HTTP_PORT):
     """addresses are the node's pinned IPv4s (one string or a list); ui_port is the
     browser UI's port in the shared namespace (browser.ui_scheme)."""
+    # Empty when the node is reached through the host dialer's mounted socket.
     addresses = [str(ipaddress.IPv4Address(value)) for value in ([addresses] if isinstance(addresses, str) else addresses)]
-    if not addresses:
-        raise ValueError('No upstream address')
     port = int(port)
     if not 1 <= port <= 65535:
         raise ValueError('Invalid upstream port')

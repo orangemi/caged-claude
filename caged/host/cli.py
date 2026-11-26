@@ -4,7 +4,7 @@ import os
 import signal
 import subprocess
 import sys
-from . import docker as engine, hostbridge, images, proxy, stateful
+from . import dialer, docker as engine, hostbridge, images, proxy, stateful
 from .config import ConfigError, resolve
 from .errors import CageError
 from .instance import Instance
@@ -47,6 +47,7 @@ def show_status(instance, args=None):
         state = stateful.open_state(args)
         print('environment: ' + state.describe())
         print('host bridge: ' + hostbridge.status(args, state))
+        print('host dialer: ' + dialer.describe(instance.name))
 
 
 def pinned_status(gateway, args):
@@ -103,6 +104,7 @@ def main(args):
     if args.action == 'stop':
         for name in instance.shutdown_order:
             engine.stop_managed(name)
+        dialer.unregister(instance.name)  # an idle dialer exits by itself
         state = stateful.open_state(args)
         # An image is unmounted with the last container; detach it so the file
         # is clean to copy. Directories are flushed now rather than later.

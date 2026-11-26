@@ -140,6 +140,7 @@ launch() {
         printf 'Building launcher image %s (first run only)...\n' "$image" >&2
         docker build -q -t "$image" - < "$dockerfile" >/dev/null || fail 'Launcher image build failed.'
     fi
+    case ${1:-} in up|check) dialer_start ;; esac
 
     # Append launcher options after the caller's arguments, then rotate the
     # caller's arguments back to the end; POSIX sh has only one array.
@@ -148,7 +149,7 @@ launch() {
         --mount "type=bind,src=$sock,dst=/var/run/docker.sock" \
         --mount "type=bind,src=$root,dst=$root" \
         -e HOME -e TERM -e "CAGED_HOST_UID=$(id -u)" -e "CAGED_HOST_GID=$(id -g)" -e CAGED_HOST_USER -e CAGED_HOST_OS \
-        -e CAGED_HOST_ROUTES -e CAGED_HOST_PROXY_PORTS \
+        -e CAGED_HOST_ROUTES -e CAGED_HOST_PROXY_PORTS -e CAGED_HOST_WSL \
         -w "$PWD"
     # Settings, node files and workspaces are validated inside the launcher,
     # so it sees them at their host paths, read-only.
@@ -214,6 +215,49 @@ host_proxy_ports() {  # the host's own system proxy listeners, which the cage mu
     esac | sort -u | paste -sd, -
 }
 
+# The host dialer (dialer/, docs/configuration.md): connects gateways to their
+# node over the physical interface, past a host TUN/VPN. It is compiled once in
+# Docker, so the host needs no Go toolchain, and exits by itself once no
+# instance routes through it.
+DIALER_BUILDER=docker.io/library/golang:1.23-alpine
+
+dialer_start() {
+    [ "${CAGED_DIALER:-1}" = 0 ] && return 0
+    dir=$root/state/.dialer
+    mkdir -p "$dir" && chmod 700 "$dir" || return 0
+    case $(uname -s) in
+        Darwin) goos=darwin ;;
+        Linux) goos=linux; [ "${CAGED_HOST_WSL:-}" = 1 ] && goos=windows ;;
+        *) return 0 ;;
+    esac
+    case $(uname -m) in
+        arm64|aarch64) goarch=arm64 ;;
+        x86_64|amd64) goarch=amd64 ;;
+        *) return 0 ;;
+    esac
+    sum=$(cat "$root/dialer/go.mod" "$root"/dialer/*.go | cksum | cut -d ' ' -f 1)
+    name=caged-dialer-$goos-$goarch-$sum
+    [ "$goos" = windows ] && name=$name.exe
+    if [ ! -x "$dir/$name" ]; then
+        printf 'Building the host dialer (first run only)...\n' >&2
+        if ! docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e GOCACHE=/tmp/go-cache \
+                -e GOTOOLCHAIN=local -e CGO_ENABLED=0 -e "GOOS=$goos" -e "GOARCH=$goarch" \
+                --mount "type=bind,src=$root/dialer,dst=/src,readonly" --mount "type=bind,src=$dir,dst=/out" \
+                -w /src "$DIALER_BUILDER" go build -trimpath -ldflags=-s -o "/out/$name" . >&2; then
+            printf 'Warning: could not build the host dialer; a host TUN/VPN may then break the node connection.\n' >&2
+            return 0
+        fi
+        find "$dir" -name 'caged-dialer-*' ! -name "$name" -exec rm -f {} + 2>/dev/null
+    fi
+    # A second copy exits at once: the dialer holds a lock in its directory.
+    if [ "$goos" = windows ]; then
+        # It must run on Windows, where the host TUN lives, not inside WSL.
+        nohup "$dir/$name" serve --dir "$(wslpath -w "$dir")" >>"$dir/dialer.log" 2>&1 </dev/null &
+    else
+        nohup "$dir/$name" serve --dir "$dir" >>"$dir/dialer.log" 2>&1 </dev/null &
+    fi
+}
+
 bridge_after() {  # bridge_after PLAN: start or stop the host bridge listener on this host
     [ -s "$1" ] || return 0
     action=$(sed -n 's/.*"action": *"\([a-z]*\)".*/\1/p' "$1")
@@ -246,6 +290,9 @@ case ${1:-} in
     up|status|check)
         export CAGED_HOST_ROUTES="${CAGED_HOST_ROUTES-$(host_routes)}"
         export CAGED_HOST_PROXY_PORTS="${CAGED_HOST_PROXY_PORTS-$(host_proxy_ports)}"
+        if grep -qi microsoft /proc/version 2>/dev/null; then
+            export CAGED_HOST_WSL=1
+        fi
         ;;
 esac
 case $1 in
@@ -258,6 +305,7 @@ case $1 in
         runner=
         status=0
         if [ "${CAGED_NATIVE:-}" = 1 ]; then
+            [ "$1" = up ] && dialer_start
             native "$@" || status=$?
         else
             launch "$@" || status=$?
@@ -270,6 +318,7 @@ case $1 in
         ;;
 esac
 if [ "${CAGED_NATIVE:-}" = 1 ]; then
+    [ "$1" = check ] && dialer_start
     native "$@"
 fi
 launch "$@"

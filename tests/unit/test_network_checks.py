@@ -30,8 +30,8 @@ class PinnedAddresses(unittest.TestCase):
             self.assertEqual(sum(f'-d {address}/32 -p tcp --dport 443' in row for row in rules), 2)
             self.assertEqual(sum(f'-s {address}/32 -p tcp --sport 443' in row for row in rules), 1)
         self.assertEqual(firewall_rules('203.0.113.1', 443), firewall_rules(['203.0.113.1'], 443))
-        with self.assertRaises(ValueError):
-            firewall_rules([], 443)
+        # Behind the host dialer's mounted socket, nothing may leave eth0 directly.
+        self.assertFalse([row for row in firewall_rules([], 443).splitlines() if '-o eth0' in row or '-i eth0' in row])
 
     def test_several_addresses_become_a_fallback_group_named_like_the_node(self):
         with patch.dict(os.environ, {POLICY_ENV: json.dumps(POLICY)}):
@@ -184,3 +184,32 @@ class LiveDrill(unittest.TestCase):
             audit.part({'tcp': {'error': 'timed out'}}, 'tcp')
         with self.assertRaises(audit.Unknown):
             audit.part(None, 'tcp')
+
+
+class UnixForwarder(unittest.TestCase):
+    def test_loopback_port_relays_to_the_dialer_socket_both_ways(self):
+        import socket
+        from caged.runtime.network.main import forward_to_unix
+        folder = tempfile.mkdtemp(prefix='cg')
+        path = os.path.join(folder, 'dialer.sock')
+        server = socket.socket(socket.AF_UNIX)
+        server.bind(path)
+        server.listen(1)
+        self.addCleanup(server.close)
+
+        def answer():
+            connection, _ = server.accept()
+            with connection:
+                data = b''
+                while chunk := connection.recv(4096):
+                    data += chunk
+                connection.sendall(b'node:' + data)
+        threading.Thread(target=answer, daemon=True).start()
+        port = forward_to_unix(path)
+        with socket.create_connection(('127.0.0.1', port), timeout=5) as client:
+            client.sendall(b'hello')
+            client.shutdown(socket.SHUT_WR)
+            reply = b''
+            while chunk := client.recv(4096):
+                reply += chunk
+        self.assertEqual(reply, b'node:hello')

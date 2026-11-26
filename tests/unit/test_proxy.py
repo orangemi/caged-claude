@@ -1,10 +1,8 @@
 """Node pinning through HTTPS DNS services, and the host route check."""
 from http.client import HTTPMessage
-import io
 import ssl
 import tempfile
 import unittest
-from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -162,30 +160,21 @@ proxies: []
 
 
 class HostRoutes(unittest.TestCase):
-    def check(self, routes, mode, system='Darwin'):
-        stderr = io.StringIO()
-        with patch.object(proxy, 'IN_LAUNCHER', True), redirect_stderr(stderr):
-            result = check_host_routes(['203.0.113.1'], mode, {'CAGED_HOST_OS': system, 'CAGED_HOST_ROUTES': routes})
-        return result, stderr.getvalue()
+    def check(self, routes, system='Darwin'):
+        with patch.object(proxy, 'IN_LAUNCHER', True):
+            return check_host_routes(['203.0.113.1'], {'CAGED_HOST_OS': system, 'CAGED_HOST_ROUTES': routes})
 
-    def test_physical_routes_are_quiet(self):
+    def test_physical_routes_have_no_tunnels(self):
         for system, routes in (('Darwin', '1.1.1.1=en0,223.5.5.5=en0'), ('Linux', '1.1.1.1=eth0,223.5.5.5=wlp2s0')):
             with self.subTest(system=system):
-                result, warning = self.check(routes, 'warn', system)
-                self.assertEqual((result['tunnels'], warning), ({}, ''))
+                self.assertEqual(self.check(routes, system)['tunnels'], {})
 
-    def test_tunnel_routes_warn_block_or_are_allowed(self):
-        result, warning = self.check('1.1.1.1=utun4,223.5.5.5=en0', 'warn')
-        self.assertEqual(result['tunnels'], {'1.1.1.1': 'utun4'})
-        self.assertIn('1.1.1.1 via utun4', warning)
-        with self.assertRaisesRegex(CageError, 'non-physical interface.*proxy.host_tunnel'):
-            self.check('1.1.1.1=Meta', 'block', 'Linux')
-        self.assertEqual(self.check('1.1.1.1=utun4', 'allow'), ({}, ''))
+    def test_tunnel_routes_are_reported(self):
+        self.assertEqual(self.check('1.1.1.1=utun4,223.5.5.5=en0')['tunnels'], {'1.1.1.1': 'utun4'})
+        self.assertEqual(self.check('1.1.1.1=Meta', 'Linux')['tunnels'], {'1.1.1.1': 'Meta'})
 
     def test_native_launcher_also_checks_the_node_addresses(self):
         with patch.object(proxy, 'IN_LAUNCHER', False), \
                 patch('subprocess.run', return_value=MagicMock(stdout='   interface: utun7\n')):
-            stderr = io.StringIO()
-            with redirect_stderr(stderr):
-                result = check_host_routes(['203.0.113.1'], 'warn', {'CAGED_HOST_OS': 'Darwin'})
+            result = check_host_routes(['203.0.113.1'], {'CAGED_HOST_OS': 'Darwin'})
         self.assertEqual(result['tunnels'], {'203.0.113.1': 'utun7'})

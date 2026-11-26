@@ -23,7 +23,9 @@ DEFAULTS = {
     # one international and one mainland resolver keep either network usable.
     'bootstrap_dns': ['https://1.1.1.1/dns-query', 'https://223.5.5.5/dns-query'],
     'dns_upstream': ['https://1.1.1.1/dns-query'],
-    'host_tunnel': 'warn',  # host routes public traffic through a TUN/VPN: warn, block or allow
+    # A host TUN/VPN carrying public traffic: auto uses the host dialer only then,
+    # dialer always uses it, direct never (warns), block refuses to start.
+    'host_tunnel': 'auto',
     'locale': 'en_US.UTF-8',
     'language': 'en-US',
     'puid': 'host',
@@ -383,8 +385,8 @@ def resolve(argv=None, environ=None):
     args.state_size = match.group(1) + match.group(2).upper()
     for name in ('bootstrap_dns', 'dns_upstream'):
         setattr(args, name, doh_list(getattr(args, name), 'proxy.' + name))
-    if args.host_tunnel not in ('warn', 'block', 'allow'):
-        raise ConfigError('proxy.host_tunnel must be warn, block or allow')
+    if args.host_tunnel not in ('auto', 'dialer', 'direct', 'block'):
+        raise ConfigError('proxy.host_tunnel must be auto, dialer, direct or block')
     ports = string_list(args.host_proxy_ports, 'ports.host_proxy')
     # The wrapper reports the host's own system proxy port, if one is set.
     ports += string_list(env.get('CAGED_HOST_PROXY_PORTS', ''), 'CAGED_HOST_PROXY_PORTS')

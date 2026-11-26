@@ -17,6 +17,20 @@ MOUNT = '/run/caged-host'
 HOST_NAME = 'host.docker.internal'
 
 
+def host_address(args, resolver=None):
+    """The host's private IPv4 as containers reach it (host.docker.internal)."""
+    address = args.host_bridge_address
+    if address is None:
+        try:
+            address = (resolver or socket.gethostbyname)(HOST_NAME)
+        except OSError:
+            raise CageError(f'Cannot resolve {HOST_NAME}; set host_bridge.address to the IPv4 containers reach the host at') from None
+    address = str(ipaddress.IPv4Address(address))
+    if ipaddress.IPv4Address(address).is_global:
+        raise CageError(f'{HOST_NAME} resolved to a public address ({address}); refusing to connect to it directly')
+    return address
+
+
 def tcp_endpoint(args, resolver=None):
     """[address, port] for the tcp transport, else None.
 
@@ -24,17 +38,7 @@ def tcp_endpoint(args, resolver=None):
     host listener over TCP: the gateway's only direct, non-node destination."""
     if not args.host_bridge or args.host_bridge_transport != 'tcp':
         return None
-    address = args.host_bridge_address
-    if address is None:
-        try:
-            address = (resolver or socket.gethostbyname)(HOST_NAME)
-        except OSError:
-            raise CageError(f'Cannot resolve {HOST_NAME} for the host bridge; set host_bridge.address '
-                            'or host_bridge.enabled: false') from None
-    address = str(ipaddress.IPv4Address(address))
-    if ipaddress.IPv4Address(address).is_global:
-        raise CageError(f'{HOST_NAME} resolved to a public address ({address}); refusing to open it as the host bridge')
-    return [address, args.host_bridge_port]
+    return [host_address(args, resolver), args.host_bridge_port]
 
 
 def target(args):
