@@ -7,10 +7,25 @@ from .lease import CORE_MARK
 
 NODE = "CAGED_NODE"
 TUN = "caged0"
+# Only used to choose among the node's own pinned addresses, through the node.
+HEALTH_URL = 'https://www.gstatic.com/generate_204'
 
 
-def make_config(proxy, secret):
+def node_proxies(proxy, addresses=None):
+    """One proxy named NODE, or a fallback group NODE over one proxy per pinned address."""
+    if not addresses or len(addresses) == 1:
+        return [{**proxy, 'name': NODE}], []
+    members = [{**proxy, 'server': address, 'name': f'{NODE}-{index}'} for index, address in enumerate(addresses, 1)]
+    group = {'name': NODE, 'type': 'fallback', 'proxies': [member['name'] for member in members],
+             'url': HEALTH_URL, 'interval': 300, 'timeout': 5000, 'lazy': False}
+    return members, [group]
+
+
+def make_config(proxy, secret, addresses=None):
     options = policy()
+    upstreams = options['dns_upstream']
+    upstreams = [upstreams] if isinstance(upstreams, str) else upstreams
+    proxies, groups = node_proxies(proxy, addresses)
     config = {
         'mode': 'global',
         'log-level': 'warning',
@@ -27,8 +42,8 @@ def make_config(proxy, secret):
         'bind-address': '127.0.0.1',
         'allow-lan': False,
         'profile': {'store-selected': False, 'store-fake-ip': False},
-        'proxies': [{**proxy, 'name': NODE}],
-        'proxy-groups': [],
+        'proxies': proxies,
+        'proxy-groups': groups,
         'rules': [],
         'dns': {
             'enable': True,
@@ -39,8 +54,10 @@ def make_config(proxy, secret):
             'fake-ip-filter': [],
             'use-hosts': False,
             'use-system-hosts': False,
-            'nameserver': [options['dns_upstream'] + '#' + NODE],
-            'default-nameserver': [urlsplit(options['dns_upstream']).hostname],
+            # mihomo queries every upstream at once and keeps the first usable
+            # answer; SERVFAIL from one endpoint falls through to the others.
+            'nameserver': [upstream + '#' + NODE for upstream in upstreams],
+            'default-nameserver': list(dict.fromkeys(urlsplit(upstream).hostname for upstream in upstreams)),
         },
         'tun': {
             'enable': True,
@@ -61,7 +78,7 @@ def make_config(proxy, secret):
     return config
 
 
-def api(secret, path, data=None, method=None):
+def api(secret, path, data=None, method=None, timeout=2):
     request = urllib.request.Request(
         f'http://127.0.0.1:{policy()["controller_port"]}' + path,
         data=json.dumps(data).encode() if data is not None else None,
@@ -69,6 +86,6 @@ def api(secret, path, data=None, method=None):
         method=method or ('PUT' if data is not None else 'GET'),
     )
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(request, timeout=2) as response:
+    with opener.open(request, timeout=timeout) as response:
         raw = response.read()
         return json.loads(raw) if raw else None

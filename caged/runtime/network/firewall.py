@@ -31,15 +31,23 @@ def host_bridge_rules(host):
     return incoming, outgoing
 
 
-def firewall_rules(address, port, host=None, ui_port=BROWSER_HTTP_PORT):
-    """ui_port is the browser UI's port in the shared namespace (browser.ui_scheme)."""
-    address = str(ipaddress.IPv4Address(address))
+def firewall_rules(addresses, port, host=None, ui_port=BROWSER_HTTP_PORT):
+    """addresses are the node's pinned IPv4s (one string or a list); ui_port is the
+    browser UI's port in the shared namespace (browser.ui_scheme)."""
+    addresses = [str(ipaddress.IPv4Address(value)) for value in ([addresses] if isinstance(addresses, str) else addresses)]
+    if not addresses:
+        raise ValueError('No upstream address')
     port = int(port)
     if not 1 <= port <= 65535:
         raise ValueError('Invalid upstream port')
     if ui_port not in BROWSER_UI_PORTS.values():
         raise ValueError('Invalid browser UI port')
     host_in, host_out = host_bridge_rules(host)
+    node_in = ''.join(f'-A INPUT -i eth0 -s {address}/32 -p tcp --sport {port} -m connmark --mark {CORE_MARK} '
+                      '-m conntrack --ctdir REPLY -j ACCEPT\n' for address in addresses)
+    node_out = ''.join(f'-A OUTPUT -o eth0 -d {address}/32 -p tcp --dport {port} -m mark --mark {CORE_MARK} -j CONNMARK --save-mark\n'
+                       f'-A OUTPUT -o eth0 -d {address}/32 -p tcp --dport {port} -m mark --mark {CORE_MARK} -j ACCEPT\n'
+                       for address in addresses)
     return f'''*filter
 :INPUT DROP [0:0]
 :FORWARD DROP [0:0]
@@ -52,8 +60,7 @@ def firewall_rules(address, port, host=None, ui_port=BROWSER_HTTP_PORT):
 -A CAGED_GATE -m connmark --mark {PROBE_MARK} -m conntrack --ctdir REPLY -j RETURN
 -A CAGED_GATE -m set --match-set {LEASE} src -j RETURN
 -A CAGED_GATE -j DROP
--A INPUT -i eth0 -s {address}/32 -p tcp --sport {port} -m connmark --mark {CORE_MARK} -m conntrack --ctdir REPLY -j ACCEPT
-{host_in}-A INPUT -p tcp --dport {ui_port} -j ACCEPT
+{node_in}{host_in}-A INPUT -p tcp --dport {ui_port} -j ACCEPT
 -A INPUT -i lo -p udp -m multiport --ports 53 -j CAGED_GATE
 -A INPUT -i lo -p tcp -m multiport --ports 53 -j CAGED_GATE
 -A INPUT -i lo -j ACCEPT
@@ -61,9 +68,7 @@ def firewall_rules(address, port, host=None, ui_port=BROWSER_HTTP_PORT):
 -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 -A INPUT -i {TUN} -j ACCEPT
 -A OUTPUT -m mark --mark {PROBE_MARK} -j CONNMARK --save-mark
--A OUTPUT -o eth0 -d {address}/32 -p tcp --dport {port} -m mark --mark {CORE_MARK} -j CONNMARK --save-mark
--A OUTPUT -o eth0 -d {address}/32 -p tcp --dport {port} -m mark --mark {CORE_MARK} -j ACCEPT
-{host_out}-A OUTPUT -p tcp --sport {ui_port} -m conntrack --ctstate ESTABLISHED -j ACCEPT
+{node_out}{host_out}-A OUTPUT -p tcp --sport {ui_port} -m conntrack --ctstate ESTABLISHED -j ACCEPT
 -A OUTPUT -o lo -p udp -m multiport --ports 53 -j CAGED_GATE
 -A OUTPUT -o lo -p tcp -m multiport --ports 53 -j CAGED_GATE
 -A OUTPUT -o lo -j ACCEPT

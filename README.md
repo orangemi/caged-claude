@@ -109,7 +109,9 @@ macOS 上，整个环境是一个 ext4 镜像文件 `state/<实例>/disk.img`。
 - 先看 `./cage status` 和 `./cage logs`。网络断开时，日志里会写明原因。
 - `permission denied: ./cage`：执行 `chmod +x cage`。
 - 启动时报 `Unable to locate package`：先执行 `sudo apt-get update`。
-- 检查网络隔离是否生效：`./cage check verify`；完整的 11 项审计：`./cage check audit --instance caged-audit --port 3003`。
+- 检查网络隔离是否生效：`./cage check verify`。完整的 11 项审计：实例运行中时 `./cage check audit` 直接检查当前实例（不中断使用）；要用真实删除网关的方式演练断网，换一个新实例：`./cage check audit --instance caged-audit --port 3003`。结果保存在 `state/<实例>/last-audit.json`。
+- 启动时提示“non-physical interface”：宿主开着 Clash TUN 或 VPN，到节点的连接会经过它。可以关掉宿主 TUN，或者用 `proxy.host_tunnel` 改成拒绝启动或不再提示。
+- 网络断开且原因提到 “node itself may be unreachable”：节点不通，或者节点域名换了 IP。先看 `./cage status` 中的 `node address`，需要时 `./cage down && ./cage up` 重新解析。
 
 ## 文档
 

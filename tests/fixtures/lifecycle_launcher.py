@@ -3,7 +3,9 @@ from caged.host import cli, images, proxy, docker as engine
 from caged.host.session import Session
 from caged.host.errors import CageError
 proxy.load_node=lambda *args: {'name':'fixture','type':'anytls','server':'203.0.113.1','port':443,'password':'non-secret-fixture','sni':'invalid.example','udp':True}
-proxy.pin_node=lambda value,_resolver:value
+proxy.pin_node=lambda value,_resolvers,_source=():(value,[value['server']])
+proxy.source_resolvers=lambda _path:[]
+proxy.check_host_routes=lambda *_args:{}
 images.build=lambda *args,**kwargs:None
 Session.check_egress=lambda self:{'country':'SG','ip':'203.0.113.2'}
 Session.check_browser=lambda self,**kwargs:{'country':'SG','ip':'203.0.113.2'}

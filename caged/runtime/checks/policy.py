@@ -17,7 +17,7 @@ def snapshot():
     selected = api(secret, '/proxies/GLOBAL')
     if runtime['mode'] != 'global' or selected['now'] != NODE:
         raise RuntimeError('Runtime proxy selection is no longer the fixed global node')
-    if config['dns']['nameserver'] != [policy()['dns_upstream'] + '#' + NODE]:
+    if config['dns']['nameserver'] != [upstream + '#' + NODE for upstream in policy()['dns_upstream']]:
         raise RuntimeError('DNS upstream is not explicitly pinned to the selected node')
     with socket.create_connection(('127.0.0.1', policy()['mixed_port']), timeout=2) as proxy:
         proxy.sendall(b'CONNECT 1.1.1.1:443 HTTP/1.1\r\nHost: 1.1.1.1:443\r\n\r\n')
@@ -44,6 +44,11 @@ def snapshot():
     v6 = subprocess.check_output(['ip6tables-save'], text=True)
     if canonical(v6) != canonical((root / 'firewall.v6').read_text()):
         raise RuntimeError('IPv6 firewall changed after installation')
+    # Chain policy lines carry packet counters even without -c.
+    match = re.search(r'^:OUTPUT DROP \[(\d+):\d+\]$', v6, re.M)
+    if not match:
+        raise RuntimeError('Default-deny IPv6 policy is missing')
+    counters['IPV6_OUTPUT'] = int(match[1])
     return {'global_node': True, 'doh_via_node': True, 'ipv4_ipv6_default_deny': True,
             'counters': counters}
 

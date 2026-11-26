@@ -34,12 +34,17 @@ class Session:
         self.network_container_id = None
         self.network_session_id = None
         self.agent_keys = {role: secrets.token_hex(32) for role in ('browser', 'claude')}
+        self.host_routes = {}
         self.state = stateful.open_state(args)
 
     def start_network(self):
         engine.ensure_names_available(self.instance.names)
         source = proxy.load_node(self.args.proxy_file_path, self.args.node)
-        selected_proxy = proxy.pin_node(source, self.args.bootstrap_dns)
+        selected_proxy, addresses = proxy.pin_node(source, self.args.bootstrap_dns,
+                                                   proxy.source_resolvers(self.args.proxy_file_path))
+        self.host_routes = proxy.check_host_routes(addresses, self.args.host_tunnel)
+        pinned = {'host': None if selected_proxy.get('server') == str(source['server']) else str(source['server']),
+                  'addresses': addresses, 'resolved_at': time.time()}
         # Inside the launcher this would probe the container's own loopback;
         # there docker run reports a busy host port itself.
         if not IN_LAUNCHER:
@@ -58,7 +63,8 @@ class Session:
                    '--tmpfs', '/tmp:rw,noexec,nosuid,size=16m',
                    '--dns', '127.0.0.1', '-p', self.ui_publish(),
                    '-e', POLICY_ENV + '=' + json.dumps(self.policy), *EMPTY_PROXY_ENV, images.IMAGES['network']]
-        payload = json.dumps({'proxy': selected_proxy, 'display_name': self.args.node,
+        payload = json.dumps({'proxy': selected_proxy, 'addresses': addresses, 'pinned': pinned,
+                              'display_name': self.args.node,
                               'session': self.session_id, 'agents': self.agent_keys}) + '\n'
         if self.detached:
             command.insert(2, '-d')
@@ -76,6 +82,17 @@ class Session:
         self.use_network(status, state)
         egress = self.check_egress()
         print(f'Network ready: {status["node"]}; exit={egress["country"]}; global; DNS through the node; IPv6 blocked.', flush=True)
+
+    def attach(self):
+        """Use this instance's running gateway and applications without owning them."""
+        status, state = self.wait_ready(timeout=5, owner=None)
+        self.use_network(status, state)
+        for name in (self.instance.browser, self.instance.claude):
+            current = engine.inspect(name)
+            if (not current or not current['State']['Running']
+                    or current['HostConfig']['NetworkMode'] != 'container:' + self.network_container_id):
+                raise CageError(f'{name} is not running on this gateway. Run ./cage up first.')
+        return status
 
     def check_egress(self):
         self.policy_snapshot()
@@ -141,8 +158,11 @@ class Session:
     def verify(self):
         self.start_clients()
         self.start_check()
-        result = self.exec_probe(self.instance.check, 'caged.runtime.checks.network', 'verify', timeout=85)
+        result = self.exec_probe(self.instance.check, 'caged.runtime.checks.network', 'verify', timeout=150)
         print(result.stdout.strip(), flush=True)
+        problems = [f'{key}: {value["error"]}' for key, value in json.loads(result.stdout).items() if 'error' in value]
+        if problems:
+            raise CageError('Network verification failed: ' + '; '.join(problems))
         # The consumer retains the namespace after the gateway is removed.
         engine.stop_managed(self.instance.network, self.session_id)
         result = self.exec_probe(self.instance.check, 'caged.runtime.checks.network', 'fail-closed', timeout=25)
@@ -387,9 +407,9 @@ class Session:
         self.wait_gate_open()
         return self.check_browser(), self.check_claude()
 
-    def audit(self):
+    def audit(self, live=False):
         from .audit import run_audit
-        run_audit(self)
+        run_audit(self, live)
 
     def close(self):
         for name in (self.instance.claude, self.instance.browser, self.instance.check, self.instance.network):
@@ -413,8 +433,9 @@ class Session:
         except Exception as error:
             print(f'Cleanup notice for the environment storage: {error}', file=sys.stderr)
 
-    def wait_ready(self, timeout=50):
-        process, session_id = self.gateway_process, self.session_id
+    def wait_ready(self, timeout=50, owner=True):
+        """owner=None accepts a gateway another launcher started (attach)."""
+        process, session_id = self.gateway_process, self.session_id if owner else None
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             state = engine.inspect(self.instance.network)

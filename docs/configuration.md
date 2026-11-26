@@ -29,7 +29,7 @@ config/mihomo.yaml   # mihomo 节点和凭证
 
 所有启动选项按 **命令行参数 > 环境变量 > `app.yaml` > 内置默认值** 解析，并且只校验最终生效的值。`--help` 列出完整选项。`config.example/app.yaml` 仅启用必选配置，可选项统一注释并注明默认值；需要覆盖默认值时取消对应注释。无默认值的选项缺失、键名拼错或生效的时区/端口非法时，会在启动容器前报错。
 
-可省略的默认项包括节点文件 `mihomo.yaml`、实例名 `caged-claude`、节点引导 DNS 和运行时 DoH 上游 `https://1.1.1.1/dns-query`、locale `en_US.UTF-8`、语言 `en-US`、跟随启动者的 UID/主 GID、共享内存 `1g`，以及整个 `ports` 块。节点、期望国家和时区仍由配置或覆盖项明确提供。
+可省略的默认项包括节点文件 `mihomo.yaml`、实例名 `caged-claude`、节点引导 DNS（`https://1.1.1.1/dns-query` 与 `https://223.5.5.5/dns-query`）、运行时 DoH 上游 `https://1.1.1.1/dns-query`、宿主 TUN 检查 `warn`、locale `en_US.UTF-8`、语言 `en-US`、跟随启动者的 UID/主 GID、共享内存 `1g`，以及整个 `ports` 块。节点、期望国家和时区仍由配置或覆盖项明确提供。
 
 | `app.yaml` 键 | 环境变量 | 命令行参数 |
 | --- | --- | --- |
@@ -39,6 +39,7 @@ config/mihomo.yaml   # mihomo 节点和凭证
 | `proxy.expected_country` | `CAGED_CLAUDE_EXPECTED_COUNTRY` | `--expected-country` |
 | `proxy.bootstrap_dns` | `CAGED_CLAUDE_BOOTSTRAP_DNS` | `--bootstrap-dns` |
 | `proxy.dns_upstream` | `CAGED_CLAUDE_DNS_UPSTREAM` | `--dns-upstream` |
+| `proxy.host_tunnel` | `CAGED_CLAUDE_HOST_TUNNEL` | `--host-tunnel` |
 | `browser.timezone` | `CAGED_CLAUDE_TIMEZONE` | `--timezone` |
 | `browser.locale` | `CAGED_CLAUDE_LOCALE` | `--locale` |
 | `browser.language` | `CAGED_CLAUDE_LANGUAGE` | `--language` |
@@ -57,6 +58,7 @@ config/mihomo.yaml   # mihomo 节点和凭证
 | `state.backend` | `CAGED_CLAUDE_STATE_BACKEND` | `--state-backend` |
 | `state.size` | `CAGED_CLAUDE_STATE_SIZE` | `--state-size` |
 | `ports.browser_probe` / `ports.claude_probe` | `CAGED_CLAUDE_BROWSER_PROBE_PORT` / `CAGED_CLAUDE_CLAUDE_PROBE_PORT` | `--browser-probe-port` / `--claude-probe-port` |
+| `ports.host_proxy` | `CAGED_CLAUDE_HOST_PROXY_PORTS` | `--host-proxy-ports` |
 | `monitor.tick` / `monitor.interval` | `CAGED_CLAUDE_MONITOR_TICK` / `CAGED_CLAUDE_MONITOR_INTERVAL` | `--monitor-tick` / `--monitor-interval` |
 | `monitor.lease` / `monitor.probe_timeout` | `CAGED_CLAUDE_MONITOR_LEASE` / `CAGED_CLAUDE_MONITOR_PROBE_TIMEOUT` | `--monitor-lease` / `--monitor-probe-timeout` |
 | `monitor.retry_initial` / `monitor.retry_max` | `CAGED_CLAUDE_MONITOR_RETRY_INITIAL` / `CAGED_CLAUDE_MONITOR_RETRY_MAX` | `--monitor-retry-initial` / `--monitor-retry-max` |
@@ -75,10 +77,16 @@ CAGED_CLAUDE_TIMEZONE=Asia/Tokyo CAGED_CLAUDE_PORT=3102 ./cage up --port 3103
 
 旧的 `proxy.config`、`CAGED_CLAUDE_PROXY_CONFIG`、`--config` 和 `--proxy-config` 仍作为兼容别名。相同来源同时提供新旧名称时，YAML 和环境变量使用新名称的值；命令行别名按出现顺序取最后一个值。CLI > ENV > YAML > 默认值的优先级不变。
 
-两个 DNS 选项都接受带路径的 HTTPS 公网 IPv4 URL，默认均为 `https://1.1.1.1/dns-query`。
+两个 DNS 选项都是 1–4 个带路径的 HTTPS 公网 IPv4 URL。YAML 写列表或单个字符串；环境变量和命令行写逗号分隔的列表或 JSON 数组。
 
-- `proxy.bootstrap_dns` 供启动器通过 HTTPS 查询所选节点域名的 A 记录。启动器校验证书，解析失败就停止启动。节点服务器已经是公网 IPv4 时，跳过这次查询。
-- `proxy.dns_upstream` 供运行时网关使用，DNS 查询经所选节点发送。
+- `proxy.bootstrap_dns`（默认 `https://1.1.1.1/dns-query`、`https://223.5.5.5/dns-query`，一家国际、一家国内）：启动器经宿主网络查询所选节点域名的 A 记录。所有服务同时查询并校验证书，按列表顺序取第一个含公网 IPv4 的应答；fake-IP、内网地址不算。全部失败时停止启动，报错逐个列出每个服务的原因（只显示主机名，不显示路径）。节点服务器已经是公网 IPv4 时跳过查询。
+- 节点文件里的 `dns.proxy-server-nameserver` 中的远程 HTTPS DoH（最多 4 个，可以是域名）排在 `bootstrap_dns` 之前，与 mihomo 自身的做法一致；域名形式的服务先经 `bootstrap_dns` 解析。非 HTTPS、本机或内网地址、带用户名密码或 `#` 参数（如 `#skip-cert-verify=true`）的条目会被忽略，不阻断启动。
+- 应答中的全部公网 IPv4（最多 4 个）都会固定：防火墙逐个放行，mihomo 用 fallback 组在这些地址之间切换。节点域名改指其他 IP 后，`./cage status` 会提示，`./cage down && ./cage up` 重新解析。
+- `proxy.dns_upstream`（默认 `https://1.1.1.1/dns-query`）：运行时网关经所选节点访问这些端点。mihomo 同时查询全部端点、采用第一个可用应答，单个端点返回 SERVFAIL 或不可达不会导致解析失败；代价是每个端点都会看到查询。DNS 检查失败时，报错附带每个端点经节点的直接测试结果。
+
+`proxy.host_tunnel` 处理宿主自身的 TUN/VPN。`./cage` 在进入启动器容器前查看宿主到几个公网地址的路由（`CAGED_NATIVE=1` 时还会查看节点地址本身）。出口不是物理网卡（例如 macOS 上的 `utun*`、Linux 上的 `Meta`、`tun*`、`wg*`）时，说明 Clash/mihomo TUN 或 VPN 正在接管公网流量，容器到节点的连接也会经过这些软件。默认 `warn` 只打印警告，`block` 拒绝启动，`allow` 不检查。WSL 只能看到 WSL 虚拟机自己的路由，看不到 Windows 上的 TUN。
+
+`ports.host_proxy`（默认 `[7890, 7897, 1080]`）列出审计时笼子必须连不到的宿主代理端口；`./cage` 还会自动加上宿主当前的系统代理端口（macOS 读 `scutil --proxy`，Linux 读指向本机的 `http_proxy` 等变量）。
 
 UI 只绑定宿主回环。DNS 的 53 端口，以及上游桌面镜像的 3000（HTTP）和 3001（HTTPS），都是内部协议端口，不作为用户偏好覆盖；其他内部服务端口可配置，需互不冲突，也不能占用这三个端口。全局代理、IPv6 阻断和默认拒绝防火墙保持固定的隔离约束。
 

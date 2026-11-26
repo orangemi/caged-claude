@@ -41,14 +41,16 @@ def main():
     else:
         payload = json.loads(sys.stdin.readline(1024 * 1024))
     proxy = payload['proxy']
-    address = str(ipaddress.IPv4Address(proxy['server']))
+    addresses = [str(ipaddress.IPv4Address(value)) for value in payload.get('addresses') or [proxy['server']]]
+    if not 1 <= len(addresses) <= 4 or proxy['server'] not in addresses:
+        raise RuntimeError('Invalid pinned node addresses')
     if proxy.get('type') != 'anytls':
         raise RuntimeError('Unsupported node transport')
     # Establish the deny policy before starting anything that can access the network.
     initialize()
     (ROOT / 'probe-mark').write_text(str(PROBE_MARK))
     command(['iptables-restore', '-w', '5'],
-            data=firewall_rules(address, proxy['port'], options.get('host_bridge_tcp'), options['browser_ui_port']))
+            data=firewall_rules(addresses, proxy['port'], options.get('host_bridge_tcp'), options['browser_ui_port']))
     command(['ip6tables-restore', '-w', '5'], data='''*filter
 :INPUT DROP [0:0]
 :FORWARD DROP [0:0]
@@ -61,7 +63,7 @@ COMMIT
         (ROOT / ('firewall.' + family)).write_text(command(
             ['iptables-save' if family == 'v4' else 'ip6tables-save']))
     secret = secrets.token_urlsafe(32)
-    config = make_config(proxy, secret)
+    config = make_config(proxy, secret, addresses)
     config_file = ROOT / 'config.json'
     config_file.write_text(json.dumps(config))
     (ROOT / 'controller-secret').write_text(secret)
@@ -105,7 +107,7 @@ COMMIT
         (ROOT / 'ready.json').write_text(json.dumps({
             'mode': 'global', 'node': payload['display_name'],
             'dns': '127.0.0.1', 'ipv6': 'blocked', 'kill_switch': True,
-            'policy': options,
+            'policy': options, 'pinned': payload.get('pinned') or {'host': None, 'addresses': addresses},
         }))
         print('Gateway ready: global mode; independent IPv4/IPv6 firewall installed.', flush=True)
         monitor = subprocess.Popen([sys.executable, '-u', '-m', 'caged.runtime.network.monitor'])
