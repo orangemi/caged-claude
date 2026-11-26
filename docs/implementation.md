@@ -129,7 +129,7 @@ mihomo 自身使用 `eth0` 连接已固定的节点 IP，避免代理连接再�
 
 浏览器和网关的常见代理环境变量都被清空，包括大小写形式的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY`。浏览器不依赖应用是否遵守这些环境变量，主要约束来自共享网络中的 TUN 与防火墙。
 
-Mac 的网络仍承载“连接远端节点”的底层通信，可能影响延迟和可用性。启动器不检查、不关闭、不改写 Mac TUN、系统代理或路由，也不因宿主接口名称拒绝启动；它检查容器里的配置与实际出口结果。
+宿主网络仍承载“连接远端节点”的底层通信，可能影响延迟和可用性。启动器不关闭、不改写宿主 TUN、系统代理或路由。宿主开着 TUN/VPN 时，到节点的那一跳经宿主拨号器、绑定物理网卡发出，见 [架构：宿主 TUN 与拨号器](architecture.md#宿主-tun-与拨号器)。网关这一侧的变化：mihomo 的节点地址改为拨号器端点（macOS/Windows 为 `host.docker.internal:<端口>`，防火墙只放行它；Linux 为网关内 `127.0.0.1` 上的转发口，转发到挂载的 Unix socket，`eth0` 上不放行任何目标），SNI 保持节点域名；多个节点地址由拨号器按顺序尝试，不再使用 fallback 组。
 
 ## 6. DNS 为什么需要单独约束
 
@@ -160,14 +160,16 @@ mihomo 的 DNS 监听在 `127.0.0.1:53`，上游为：
 <proxy.dns_upstream>#CAGED_NODE
 ```
 
-例如，示例配置会生成 `https://1.1.1.1/dns-query#CAGED_NODE`。DoH URL 当前要求公网 IPv4 字面地址、HTTPS 和查询路径，不接受额外凭证、query 或 fragment，避免引入未经约束的域名引导；节点标识由程序追加。`#CAGED_NODE` 显式指定该上游经选定节点连接。完整路径是：
+例如，示例配置会生成 `https://1.1.1.1/dns-query#CAGED_NODE`。`dns_upstream` 可以列 1–4 个端点，每个都生成一行；mihomo 同时查询并采用第一个可用应答，SERVFAIL 不会被当作结果。DoH URL 当前要求公网 IPv4 字面地址、HTTPS 和查询路径，不接受额外凭证、query 或 fragment，避免引入未经约束的域名引导；节点标识由程序追加。`#CAGED_NODE` 显式指定该上游经选定节点连接。完整路径是：
 
 ```text
 Chromium → 系统解析器 → 127.0.0.1:53
          → mihomo → 配置选择的节点 → 配置选择的 DoH 服务
 ```
 
-节点自己的服务器地址在启动时由宿主解析一次并固定为 IPv4，用于建立这条通道。该引导解析不包含后续浏览器访问的域名；固定地址也避免节点连接依赖尚未建立的容器 DNS。
+节点服务器填域名时，启动器同时向节点文件 `dns.proxy-server-nameserver` 中的安全 DoH 和 `proxy.bootstrap_dns` 查询 A 记录，校验证书，按顺序取第一个含公网 IPv4 的应答，并固定其中最多 4 个地址。网关防火墙只放行这些地址；多于一个时，mihomo 的 `CAGED_NODE` 是一个 fallback 组，健康检查经节点访问 generate_204，在地址之间切换。全部服务都失败时停止启动，并列出每个服务的原因。填公网 IPv4 的节点直接使用配置的地址。
+
+这一步在隧道建立之前，只能经宿主网络进行；应答可信靠的是 HTTPS 证书校验，而不是“哪个解析器更权威”。DNS 检查失败时，网关用 mixed 代理经节点逐个请求 `dns_upstream` 端点，报错写明每个端点是应答、超时、TLS 失败还是 HTTP 错误。
 
 ### 6.3 fake-IP 不是实际公网解析结果
 
@@ -293,25 +295,25 @@ Claude 凭证默认绑定 `<state.dir>/<实例>/claude` 到容器 `/home/claude/
 
 ## 10. 11 项检查如何取证
 
-`audit` 创建一组新的临时容器，在检查前后读取防火墙和计数器，并运行真实流量探针。最后真正移除这组实例的网关，验证剩余网络空间没有回退出口。
+实例运行中时，`audit` 附加到当前实例；否则创建一组新的临时容器。两种模式都会在检查前后读取防火墙和计数器，并运行真实流量探针。故障演练：当前实例用 `ip rule add uidrange 65533-65533 lookup main priority 100` 让专用 UID 绕开 TUN 路由，模拟代理消失；一次性实例真正移除自己的网关，验证剩余网络空间没有回退出口。
 
 | 检查 | 核心证据 |
 | --- | --- |
 | 环境外出站约束 | IPv4/IPv6 默认拒绝规则与安装快照一致；物理接口探针导致 `CAGED_DIRECT` 计数增加；浏览器仅加入指定网关网络 |
-| 终端检测通道 | 不使用代理环境变量的 HTTPS 请求返回符合生效国家策略的实际出口 |
+| 终端检测通道 | 不使用代理环境变量的 HTTPS 请求经多个出口 IP 服务（并发补位）与定位服务（按顺序）得到符合生效国家策略的实际出口 |
 | DNS 与解析约束 | 解析器仅为回环；本地 UDP/TCP 查询与新鲜 TXT 递归响应成功；显式节点 DoH 配置；公共 UDP/53、TCP/53、DoT/853 失败且 DNS 丢弃计数增加 |
 | 系统时区与语言 | 实际环境、时区文件、UTC 偏移和 locale 一致 |
 | 浏览器时区与语言 | 专用标签读取 `Intl`、`navigator`、实际 DNS 策略与浏览器出口 |
-| 共享文件与宿主私有目录 | 精确核对明示 workspace 与 Claude 状态目录的挂载白名单，拒绝额外绑定；无 Docker socket 或网关运行凭证文件 |
+| 共享文件与宿主私有目录 | 精确核对明示 workspace 与 Claude 状态目录的挂载白名单，拒绝额外绑定；无 Docker socket 或网关运行凭证文件；随机令牌在 Claude 状态目录往返读写，宿主私有目录中的探针文件在环境内不可见 |
 | 宿主管理接口 | 字面 IP 的元数据/网桥管理端口探针失败且私网丢弃计数增加；控制器匿名访问 401；浏览器能力边界与已发布端口符合预期 |
-| 代理故障关闭 | 删除网关后，检查容器与 Claude 的 TCP/DNS/UDP，以及浏览器新鲜字面 IP 导航失败；浏览器禁用缓存并绕过 Service Worker，故障前同源请求有成功对照 |
+| 代理故障关闭 | 当前实例：专用 UID 失去代理路由后 HTTPS、UDP、公共 DNS 失败，`CAGED_DIRECT` 计数增加，演练前同一 UID 有成功对照。一次性实例：删除网关后，检查容器与 Claude 的 TCP/DNS/UDP，以及浏览器新鲜字面 IP 导航失败；浏览器禁用缓存并绕过 Service Worker |
 | UDP 出站约束 | 真实 STUN 得到代理出口；物理 UDP 不在出口白名单中 |
-| IPv6 出站约束 | 实际 IPv6 外网请求失败，IPv6 默认拒绝规则未变化 |
-| 出口符合已保存规则 | 终端 HTTPS 与浏览器国家符合生效策略（如配置国家限制），当前 TCP、UDP、browser、claude 采样出口 IP 一致 |
+| IPv6 出站约束 | 全局 IPv6 地址为 0；实际 IPv6 外网请求失败；有 IPv6 默认路由时 IPv6 默认拒绝计数增加 |
+| 出口符合已保存规则 | 出口 IP 不在内置大陆网段且定位不是 CN；终端 HTTPS 与浏览器国家符合生效策略（如配置国家限制），当前 TCP、UDP、browser、claude 采样出口 IP 一致 |
 
 仅“请求失败”可能是服务本身不可用，不能自动等同于隔离生效。本地回归测试先证明替身 TCP、UDP、UDP/53、TCP/53、TCP/853 服务可连通，再验证网关运行及移除后均被阻断；真实审计同时使用内核丢弃计数增加作为证据。
 
-报告初始状态为 `unknown`，完成对应证据后才设为 `passed`。探针或断言失败会输出错误、保留未完成项，并以非零退出码结束；不会补齐成虚假的 11/11。
+报告初始状态为 `unknown`，完成对应证据后才设为 `passed`；确认违规设为 `failed`。每项独立判定，一个探针失败只影响依赖它的项。不是 11/11 时以非零退出码结束；不会补齐成虚假的 11/11。
 
 ### 验证命令的区别
 
@@ -320,11 +322,12 @@ Claude 凭证默认绑定 `<state.dir>/<实例>/claude` 到容器 `/home/claude/
 | `./cage check test` | 配置优先级、校验和跨组件传递；本地可连通替身、隔离与代理删除测试、启动器和子进程生命周期；不使用真实节点凭证 |
 | `./cage check verify` | 真实节点的 HTTPS、DNS、UDP、物理接口及 IPv6 检查，再移除自己的网关验证断网 |
 | `./cage check smoke` | 启动真实 Chromium 和 Claude 服务，检查环境、DNS、出口与网页桌面入口，完成后清理 |
-| `./cage check audit --instance caged-audit --port 3003` | 新实例中的完整 11 项检查与故障演练，完成后清理 |
+| `./cage check audit` | 实例运行中：在当前实例上完整 11 项检查，故障演练不中断使用 |
+| `./cage check audit --instance caged-audit --port 3003` | 新实例中的完整 11 项检查，真实删除网关做故障演练，完成后清理 |
 
 ## 11. 当前实现的范围
 
-启动会验证 DNS、模式、防火墙、出口策略与两个应用的环境设置，network 内持续监控并续期内核许可。Mac 不需要常驻监督脚本，不检查或修改宿主代理、TUN 和路由。运行策略是启动快照，宿主应用 YAML 的编辑在重新启动后生效。后台不重复删除网关的完整故障演练；期望国家沿用 `proxy.expected_country`，不承诺永久固定公网 IP，周期采样也不代表逐条连接的出口证明。
+启动会验证 DNS、模式、防火墙、出口策略与两个应用的环境设置，network 内持续监控并续期内核许可。Mac 不需要常驻监督脚本，不修改宿主代理、TUN 和路由；`./cage` 只读取宿主路由与系统代理端口，用于 `proxy.host_tunnel` 和管理接口检查。宿主拨号器随实例存在：路由清空后自行退出，崩溃时网关连不上节点、许可到期断网，`./cage up` 会重新拉起。运行策略是启动快照，宿主应用 YAML 的编辑在重新启动后生效。后台不重复删除网关的完整故障演练；期望国家沿用 `proxy.expected_country`，中国大陆出口始终拒绝；不承诺永久固定公网 IP，周期采样也不代表逐条连接的出口证明。出口定位结果在网关内缓存 6 小时，避免频繁请求第三方定位服务。
 
 本项目的 UDP 策略是经节点转发，与 Claude-Cage 的默认 UDP 阻断策略不同。IPv6 则直接阻断。文件系统隔离根据挂载结构和具体私有路径取证，不是对宿主所有文件逐个做读取测试。
 
@@ -346,12 +349,14 @@ Claude 凭证默认绑定 `<state.dir>/<实例>/claude` 到容器 `/home/claude/
 | [caged/host/config.py](../caged/host/config.py)、[proxy.py](../caged/host/proxy.py)、[yamlfile.py](../caged/host/yamlfile.py) | 配置优先级与校验、安全 YAML 加载、节点选择和地址固定 |
 | [caged/host/shell.py](../caged/host/shell.py)、[enter.py](../caged/host/enter.py)、[claude.py](../caged/host/claude.py)、[logs.py](../caged/host/logs.py) | 共用身份与所有权检查，进入容器 Shell、Claude CLI 或查看日志 |
 | [caged/host/hostbridge.py](../caged/host/hostbridge.py)、[bridge.py](../caged/host/bridge.py)、[caged/runtime/hostpipe.py](../caged/runtime/hostpipe.py) | 宿主桥：launcher 侧的挂载与计划、宿主侧监听与按需启动的 `sshd -i`、容器侧的 socket 中转（见 [宿主桥设计](host-bridge.md)） |
-| [caged/host/audit.py](../caged/host/audit.py) | 11 项取证编排 |
+| [caged/host/audit.py](../caged/host/audit.py) | 11 项取证编排：当前实例或一次性实例，逐项通过/失败/未知 |
+| [dialer](../dialer)、[caged/host/dialer.py](../caged/host/dialer.py) | 宿主拨号器（Go，绑定物理网卡转发到固定节点）与启动器侧的路由登记、对照结果和路径选择 |
 | [caged/runtime/network/main.py](../caged/runtime/network/main.py)、[mihomo.py](../caged/runtime/network/mihomo.py)、[firewall.py](../caged/runtime/network/firewall.py) | 网关生命周期、全局代理与 DNS 配置、防火墙 |
 | [caged/runtime/network/monitor.py](../caged/runtime/network/monitor.py)、[lease.py](../caged/runtime/network/lease.py) | 持续检查、限时许可、退避恢复与人工暂停 |
 | [caged/runtime/agents/environment.py](../caged/runtime/agents/environment.py) | 两个应用的只读签名环境探针 |
-| [caged/runtime/checks](../caged/runtime/checks) | CLI 网络探针、策略快照、显式浏览器检查、Claude 与系统环境取证 |
+| [caged/runtime/checks](../caged/runtime/checks) | CLI 网络探针、多源出口与定位（egress.py）、策略快照、显式浏览器检查、文件边界探针、Claude 与系统环境取证 |
 | [caged/shared/policy.py](../caged/shared/policy.py)、[protocol.py](../caged/shared/protocol.py) | 运行策略、固定用户名、国家校验与签名消息编码 |
+| [caged/shared/mainland.py](../caged/shared/mainland.py) | 内置中国大陆 IPv4 网段（APNIC 分配给 CN 的地址）；`python3 -m caged.shared.mainland delegated-apnic-latest` 重新生成 |
 | [containers/network](../containers/network)、[browser](../containers/browser)、[claude](../containers/claude) | 各自的 Dockerfile 与镜像初始化文件 |
 | [tests/unit](../tests/unit) | 无 Docker 的配置、监控状态转换和模块结构回归 |
 | [tests/integration](../tests/integration) | 真实 Docker 生命周期、挂载持久化、网络约束与内核到期断网 |

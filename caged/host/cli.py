@@ -4,7 +4,7 @@ import os
 import signal
 import subprocess
 import sys
-from . import docker as engine, hostbridge, images, proxy, stateful
+from . import dialer, docker as engine, hostbridge, images, proxy, stateful
 from .config import ConfigError, resolve
 from .errors import CageError
 from .instance import Instance
@@ -41,10 +41,39 @@ def show_status(instance, args=None):
         if result.returncode == 0:
             observed = json.loads(result.stdout)
             print('network permit: ' + observed['state'] + '; remaining=' + str(observed['lease_remaining']) + 's; ' + observed['reason'])
+        if args is not None:
+            print('node address: ' + pinned_status(gateway, args))
     if args is not None:
         state = stateful.open_state(args)
         print('environment: ' + state.describe())
         print('host bridge: ' + hostbridge.status(args, state))
+        print('host dialer: ' + dialer.describe(instance.name))
+
+
+def pinned_status(gateway, args):
+    """Whether the node hostname still resolves to an address the gateway pinned.
+
+    The gateway firewall only allows the addresses pinned at start, so a node that
+    moved needs a restart to be re-resolved."""
+    result = engine.docker('exec', gateway['Id'], 'cat', '/run/caged/ready.json', check=False)
+    try:
+        pinned = json.loads(result.stdout).get('pinned') if result.returncode == 0 else None
+    except ValueError:
+        pinned = None
+    if not pinned:
+        return 'unknown (gateway started by an older version)'
+    addresses = ', '.join(pinned['addresses'])
+    if not pinned.get('host'):
+        return addresses + ' (fixed in the node file)'
+    try:
+        current = [str(value) for value in proxy.lookup(
+            pinned['host'], list(dict.fromkeys([*proxy.source_resolvers(args.proxy_file_path), *args.bootstrap_dns])))]
+    except CageError as error:
+        return f'{addresses} (pinned; could not re-check: {error})'
+    if set(current) & set(pinned['addresses']):
+        return addresses + ' (pinned; still current)'
+    return (f'{addresses} pinned, but the node hostname now resolves to {", ".join(current)}. '
+            'Run ./cage down && ./cage up to use the new address.')
 
 
 def main(args):
@@ -75,6 +104,7 @@ def main(args):
     if args.action == 'stop':
         for name in instance.shutdown_order:
             engine.stop_managed(name)
+        dialer.unregister(instance.name)  # an idle dialer exits by itself
         state = stateful.open_state(args)
         # An image is unmounted with the last container; detach it so the file
         # is clean to copy. Directories are flushed now rather than later.
@@ -94,6 +124,16 @@ def main(args):
         return
     if args.action == 'start':
         warn_legacy()
+    if args.action == 'audit':
+        gateway = engine.inspect(instance.network)
+        if gateway and gateway['State']['Running']:
+            # The running instance: only this audit's own probe container is stopped afterwards.
+            session = Session(args, detached=True)
+            try:
+                session.audit(live=True)
+            finally:
+                session.close()
+            return
     session = Session(args, detached=args.action == 'start')
     keep_running = False
     try:

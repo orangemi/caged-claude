@@ -6,8 +6,10 @@ import os
 from pathlib import Path
 import secrets
 import signal
+import socket
 import subprocess
 import sys
+import threading
 import time
 import argparse
 from caged.shared.policy import policy
@@ -22,6 +24,39 @@ STOP = False
 def stop_requested(_signum, _frame):
     global STOP
     STOP = True
+
+
+def forward_to_unix(path):
+    """Serve 127.0.0.1:<free port> by relaying each connection to a Unix socket."""
+    listener = socket.socket()
+    listener.bind(('127.0.0.1', 0))
+    listener.listen(16)
+
+    def relay(source, target):
+        try:
+            while data := source.recv(65536):
+                target.sendall(data)
+            target.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+    def serve(client):
+        with client, socket.socket(socket.AF_UNIX) as upstream:
+            try:
+                upstream.connect(path)
+            except OSError:
+                return
+            sending = threading.Thread(target=relay, args=(client, upstream), daemon=True)
+            sending.start()
+            relay(upstream, client)
+            sending.join()
+
+    def accept():
+        while True:
+            client, _ = listener.accept()
+            threading.Thread(target=serve, args=(client,), daemon=True).start()
+    threading.Thread(target=accept, daemon=True).start()
+    return listener.getsockname()[1]
 
 
 def main():
@@ -41,14 +76,22 @@ def main():
     else:
         payload = json.loads(sys.stdin.readline(1024 * 1024))
     proxy = payload['proxy']
-    address = str(ipaddress.IPv4Address(proxy['server']))
+    route = payload.get('dialer') or {'kind': 'direct'}
+    if route['kind'] == 'unix':
+        # The host dialer's socket: mihomo dials a loopback forwarder, nothing leaves eth0.
+        addresses = []
+        proxy = {**proxy, 'port': forward_to_unix(route['socket'])}
+    else:
+        addresses = [str(ipaddress.IPv4Address(value)) for value in payload.get('addresses') or [proxy['server']]]
+        if not 1 <= len(addresses) <= 4 or proxy['server'] not in addresses:
+            raise RuntimeError('Invalid pinned node addresses')
     if proxy.get('type') != 'anytls':
         raise RuntimeError('Unsupported node transport')
     # Establish the deny policy before starting anything that can access the network.
     initialize()
     (ROOT / 'probe-mark').write_text(str(PROBE_MARK))
     command(['iptables-restore', '-w', '5'],
-            data=firewall_rules(address, proxy['port'], options.get('host_bridge_tcp'), options['browser_ui_port']))
+            data=firewall_rules(addresses, proxy['port'], options.get('host_bridge_tcp'), options['browser_ui_port']))
     command(['ip6tables-restore', '-w', '5'], data='''*filter
 :INPUT DROP [0:0]
 :FORWARD DROP [0:0]
@@ -61,7 +104,8 @@ COMMIT
         (ROOT / ('firewall.' + family)).write_text(command(
             ['iptables-save' if family == 'v4' else 'ip6tables-save']))
     secret = secrets.token_urlsafe(32)
-    config = make_config(proxy, secret)
+    # Behind the dialer there is one endpoint; the dialer itself fails over between addresses.
+    config = make_config(proxy, secret, addresses if route['kind'] == 'direct' else None)
     config_file = ROOT / 'config.json'
     config_file.write_text(json.dumps(config))
     (ROOT / 'controller-secret').write_text(secret)
@@ -105,7 +149,7 @@ COMMIT
         (ROOT / 'ready.json').write_text(json.dumps({
             'mode': 'global', 'node': payload['display_name'],
             'dns': '127.0.0.1', 'ipv6': 'blocked', 'kill_switch': True,
-            'policy': options,
+            'policy': options, 'pinned': payload.get('pinned') or {'host': None, 'addresses': addresses},
         }))
         print('Gateway ready: global mode; independent IPv4/IPv6 firewall installed.', flush=True)
         monitor = subprocess.Popen([sys.executable, '-u', '-m', 'caged.runtime.network.monitor'])

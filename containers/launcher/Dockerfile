@@ -2,7 +2,7 @@
 # mounted at its host path, so code changes never require rebuilding this
 # image. ./cage tags it by this file's checksum and rebuilds when it changes.
 FROM docker.io/library/alpine:3.22
-RUN apk add --no-cache ca-certificates docker-cli docker-cli-buildx python3 py3-yaml tzdata
+RUN apk add --no-cache ca-certificates docker-cli docker-cli-buildx python3 py3-dnspython py3-yaml tzdata
 # CAGED_LAUNCHER makes ./cage execute Python directly instead of nesting
 # another launcher, and tells the Python code it cannot see host loopback.
 # DOCKER_CONFIG keeps the host's ~/.docker (credential helpers such as

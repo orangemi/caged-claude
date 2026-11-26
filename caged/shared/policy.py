@@ -26,6 +26,13 @@ def policy():
     return result
 
 
-def check_country(country, expected):
+def check_country(country, expected, address=None):
+    """Mainland China exits are always refused; a range match needs no country evidence."""
+    if address is not None:
+        from .mainland import is_mainland
+        if is_mainland(address):
+            raise PolicyViolation('Exit IP is in a mainland China range; mainland exits are not allowed')
+    if country == 'CN':
+        raise PolicyViolation('Exit is located in mainland China; mainland exits are not allowed')
     if not country or (expected and country != expected):
         raise PolicyViolation('Exit country did not match the configured policy')

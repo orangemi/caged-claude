@@ -57,7 +57,9 @@ class Settings(unittest.TestCase):
         del self.data['ports']
         self.write()
         args = self.parse()
-        self.assertEqual(args.dns_upstream, 'https://1.1.1.1/dns-query')
+        self.assertEqual(args.bootstrap_dns, ['https://1.1.1.1/dns-query', 'https://223.5.5.5/dns-query'])
+        self.assertEqual(args.dns_upstream, ['https://1.1.1.1/dns-query'])
+        self.assertEqual((args.host_tunnel, args.host_proxy_ports), ('auto', [1080, 7890, 7897]))
         self.assertEqual((args.locale, args.language, args.languages), ('en_US.UTF-8', 'en-US', ['en-US', 'en']))
         self.assertEqual((args.puid, args.pgid, args.shm_size), (os.getuid(), os.getgid(), '1g'))
         self.assertEqual((args.port, args.controller_port, args.mixed_port, args.debug_port), (3002, 9090, 17890, 9222))
@@ -79,6 +81,39 @@ class Settings(unittest.TestCase):
         args = self.parse('--language', 'ja-JP', '--port', '6789',
                           env={'CAGED_CLAUDE_LANGUAGE': 'invalid environment value', 'CAGED_CLAUDE_PORT': 'invalid'})
         self.assertEqual((args.language, args.port), ('ja-JP', 6789))
+
+    def test_bootstrap_dns_uses_config_precedence_independently_of_runtime_dns(self):
+        self.data['proxy']['bootstrap_dns'] = 'https://223.5.5.5/dns-query'
+        self.write()
+        env = {'CAGED_CLAUDE_BOOTSTRAP_DNS': 'https://8.8.8.8/dns-query,https://1.0.0.1/dns-query'}
+        self.assertEqual(self.parse().bootstrap_dns, ['https://223.5.5.5/dns-query'])
+        self.assertEqual(self.parse(env=env).bootstrap_dns, ['https://8.8.8.8/dns-query', 'https://1.0.0.1/dns-query'])
+        args = self.parse('--bootstrap-dns', '["https://1.0.0.1/dns-query"]', env=env)
+        self.assertEqual(args.bootstrap_dns, ['https://1.0.0.1/dns-query'])
+        self.assertEqual(runtime_policy(args)['dns_upstream'], ['https://9.9.9.9/dns-query'])
+        self.assertNotIn('bootstrap_dns', runtime_policy(args))
+
+    def test_dns_lists_accept_yaml_lists_and_reject_too_many_or_empty(self):
+        self.data['proxy']['dns_upstream'] = ['https://9.9.9.9/dns-query', 'https://1.1.1.1/dns-query',
+                                              'https://9.9.9.9/dns-query']
+        self.write()
+        self.assertEqual(self.parse().dns_upstream, ['https://9.9.9.9/dns-query', 'https://1.1.1.1/dns-query'])
+        for value in ([], ['https://1.1.1.1/a', 'https://1.1.1.1/b', 'https://1.1.1.1/c', 'https://1.1.1.1/d',
+                           'https://1.1.1.1/e'], [{'url': 'https://1.1.1.1/dns-query'}]):
+            with self.subTest(value=value):
+                self.data['proxy']['dns_upstream'] = value
+                self.write()
+                with self.assertRaisesRegex(ConfigError, 'dns_upstream'):
+                    self.parse()
+
+    def test_host_tunnel_and_host_proxy_ports(self):
+        args = self.parse('--host-tunnel', 'block', env={'CAGED_CLAUDE_HOST_PROXY_PORTS': '8888',
+                                                          'CAGED_HOST_PROXY_PORTS': '7890,6152'})
+        self.assertEqual((args.host_tunnel, args.host_proxy_ports), ('block', [6152, 7890, 8888]))
+        self.assertEqual(runtime_policy(args)['host_proxy_ports'], [6152, 7890, 8888])
+        for flag, value in (('--host-tunnel', 'warn'), ('--host-proxy-ports', '0'), ('--host-proxy-ports', 'x')):
+            with self.subTest(flag=flag), self.assertRaises(ConfigError):
+                self.parse(flag, value)
 
     def test_explicit_invalid_optional_values_do_not_silently_use_defaults(self):
         self.data['browser']['locale'] = None
@@ -169,6 +204,12 @@ class Settings(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             check_country(None, None)
 
+    def test_mainland_china_exits_are_always_refused(self):
+        for country, address in (('CN', None), (None, '223.5.5.5'), ('SG', '114.114.114.114')):
+            with self.subTest(country=country, address=address), self.assertRaisesRegex(RuntimeError, 'mainland'):
+                check_country(country, None, address)
+        check_country('HK', None, '1.1.1.1')
+
     def test_host_identity_and_explicit_zero_are_preserved(self):
         args = self.parse('--puid', 'host', '--pgid', 'host')
         self.assertEqual((args.puid, args.pgid), (os.getuid(), os.getgid()))
@@ -234,7 +275,11 @@ class Settings(unittest.TestCase):
                  ('--locale', 'bad locale'), ('--puid', '-1'), ('--expected-country', 'wrong'),
                  ('--dns-upstream', 'http://1.1.1.1/dns-query'),
                  ('--dns-upstream', 'https://127.0.0.1/dns-query'),
-                 ('--dns-upstream', 'https://1.1.1.1/dns-query#DIRECT')]
+                 ('--dns-upstream', 'https://1.1.1.1/dns-query#DIRECT'),
+                 ('--bootstrap-dns', 'https://dns.google/dns-query'),
+                 ('--bootstrap-dns', 'https://198.18.0.1/dns-query'),
+                 ('--bootstrap-dns', 'https://224.0.0.1/dns-query'),
+                 ('--expected-country', 'CN'), ('--expected-country', 'cn')]
         for flag, value in cases:
             with self.subTest(flag=flag, value=value):
                 with self.assertRaises(ConfigError):
@@ -277,6 +322,8 @@ class Settings(unittest.TestCase):
         self.assertEqual(config['mixed-port'], 19890)
         self.assertEqual(config['dns']['nameserver'], ['https://9.9.9.9/dns-query#CAGED_NODE'])
         self.assertEqual(config['dns']['default-nameserver'], ['9.9.9.9'])
+        self.assertEqual([proxy['name'] for proxy in config['proxies']], ['CAGED_NODE'])
+        self.assertEqual(config['proxy-groups'], [])
 
     def test_nodes_command_lists_other_regions_too(self):
         path = self.folder / 'nodes.yaml'

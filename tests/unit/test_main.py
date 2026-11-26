@@ -67,7 +67,9 @@ exit {launcher_status}
                 (folder / name).chmod(0o755)
             sock = socket.socket(socket.AF_UNIX)
             sock.bind(str(folder / 'd.sock'))
-            env = {'PATH': f'{folder}:/usr/bin:/bin', 'HOME': str(folder), 'CAGED_DOCKER_SOCK': str(folder / 'd.sock')}
+            # The host dialer has its own flow; keep it out of the bridge's call log.
+            env = {'PATH': f'{folder}:/usr/bin:/bin', 'HOME': str(folder), 'CAGED_DOCKER_SOCK': str(folder / 'd.sock'),
+                   'CAGED_DIALER': '0'}
             result = subprocess.run(['sh', str(ROOT / 'cage'), subcommand], env=env, cwd=folder,
                                     capture_output=True, text=True, timeout=20, stdin=subprocess.DEVNULL)
             sock.close()

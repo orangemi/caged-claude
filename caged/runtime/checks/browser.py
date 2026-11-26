@@ -8,6 +8,8 @@ import urllib.request
 import uuid
 import websocket
 from caged.shared.policy import policy, check_country, PolicyViolation, BROWSER_DNS_POLICIES
+from caged.shared.mainland import is_mainland
+from caged.runtime.checks import egress
 
 POLICIES = BROWSER_DNS_POLICIES
 
@@ -85,44 +87,53 @@ def observe(fault=False, settings_only=False):
             value['dns_policies'] = POLICIES
             return value
 
+        def page_text(url, timeout):
+            if rpc('Page.navigate', {'url': url}).get('errorText'):
+                return None
+            deadline = time.monotonic() + timeout
+            origin = json.dumps(url)
+            while time.monotonic() < deadline:
+                # Until the navigation commits, the previous page is still readable.
+                text = evaluate(f"location.origin === new URL({origin}).origin ? (document.body?.innerText || '') : ''")
+                if text and text.strip():
+                    return text
+                time.sleep(0.2)
+            return None
+
         # Positive control for the exact literal-IP origin used by the fault
         # probe. A certificate error must never look like a working kill switch.
-        result = rpc('Page.navigate', {'url': 'https://1.1.1.1/cdn-cgi/trace?caged=' + uuid.uuid4().hex})
-        if result.get('errorText'):
-            raise RuntimeError('Browser literal-IP positive control failed')
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            country = evaluate("document.body?.innerText.match(/^loc=(.+)$/m)?.[1]")
-            if country:
-                check_country(country, options['expected_country'])
+        ip, source, failures = None, None, {}
+        for name, url in [item for item in egress.IP_SOURCES if item[0] == 'cloudflare'] + [
+                item for item in egress.IP_SOURCES if item[0] != 'cloudflare']:
+            text = page_text(url + ('&' if '?' in url else '?') + 'caged=' + uuid.uuid4().hex, 12)
+            ip = egress.parse_ip(name, text or '')
+            if ip:
+                source = name
                 break
-            time.sleep(0.2)
-        else:
-            raise RuntimeError('Browser literal-IP positive control lacked an exit-country response')
-
-        rpc('Page.navigate', {'url': 'https://www.cloudflare.com/cdn-cgi/trace?caged=' + uuid.uuid4().hex})
-        expression = '''(() => {
-          const trace = Object.fromEntries((document.body?.innerText || '').trim().split('\\n').map(x => x.split('=')));
-          return {language:navigator.language, languages:navigator.languages,
-            timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,
-            country:trace.loc, ip:trace.ip};
-        })()'''
-        deadline = time.monotonic() + 25
-        while time.monotonic() < deadline:
-            value = evaluate(expression)
-            if value and value.get('country'):
-                check_country(value.get('country'), options['expected_country'])
-                expected_timezone = evaluate('new Intl.DateTimeFormat(undefined, {timeZone:'
-                                             + json.dumps(options['timezone']) + '}).resolvedOptions().timeZone')
-                if value.get('timezone') != expected_timezone:
-                    raise RuntimeError('Browser timezone did not match the configured timezone')
-                if value.get('language') != options['language'] or value.get('languages') != options['languages']:
-                    raise RuntimeError('Browser language preferences did not match the configured language')
-                value['dns_policies'] = {row['name']: row['value'] for row in policies}
-                value['literal_ip_positive_control'] = 'passed'
-                return value
-            time.sleep(0.3)
-        raise RuntimeError('Browser network check did not return a result')
+            failures[name] = 'no public IPv4 in the page'
+        if not ip:
+            raise RuntimeError('No exit IP service answered in the browser (' + egress.summary(failures) + ')')
+        # The gateway locates the browser's exit the same way as the terminal's.
+        from caged.runtime.checks.network import request
+        if is_mainland(ip):
+            raise PolicyViolation('Browser exit IP is in a mainland China range; mainland exits are not allowed')
+        country, located_by, location_failures = egress.locate(ip, request)
+        if not country:
+            raise RuntimeError('Browser exit IP measured, but every location service failed ('
+                               + egress.summary(location_failures) + ')')
+        check_country(country, options['expected_country'], ip)
+        value = evaluate('({language:navigator.language, languages:navigator.languages,'
+                         'timezone:Intl.DateTimeFormat().resolvedOptions().timeZone})')
+        expected_timezone = evaluate('new Intl.DateTimeFormat(undefined, {timeZone:'
+                                     + json.dumps(options['timezone']) + '}).resolvedOptions().timeZone')
+        if value.get('timezone') != expected_timezone:
+            raise RuntimeError('Browser timezone did not match the configured timezone')
+        if value.get('language') != options['language'] or value.get('languages') != options['languages']:
+            raise RuntimeError('Browser language preferences did not match the configured language')
+        value.update(ip=ip, country=country, ip_source=source, location_source=located_by,
+                     dns_policies={row['name']: row['value'] for row in policies},
+                     literal_ip_positive_control='passed' if source == 'cloudflare' else 'unavailable')
+        return value
     finally:
         client.close()
         try:

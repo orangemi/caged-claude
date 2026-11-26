@@ -19,7 +19,13 @@ PREFIX = 'CAGED_CLAUDE_'
 DEFAULTS = {
     'proxy_file_path': 'mihomo.yaml',
     'instance': 'caged-claude',
-    'dns_upstream': 'https://1.1.1.1/dns-query',
+    # Node hostnames are looked up on the host network before the tunnel exists;
+    # one international and one mainland resolver keep either network usable.
+    'bootstrap_dns': ['https://1.1.1.1/dns-query', 'https://223.5.5.5/dns-query'],
+    'dns_upstream': ['https://1.1.1.1/dns-query'],
+    # A host TUN/VPN carrying public traffic: auto uses the host dialer only then,
+    # dialer always uses it, direct never (warns), block refuses to start.
+    'host_tunnel': 'auto',
     'locale': 'en_US.UTF-8',
     'language': 'en-US',
     'puid': 'host',
@@ -45,6 +51,8 @@ DEFAULTS = {
     'host_bridge_address': None,  # tcp only; None: host.docker.internal, resolved at start
     'browser_probe_port': 19981,
     'claude_probe_port': 19982,
+    # Host proxy listeners the cage must not reach; ./cage adds the host's system proxy port.
+    'host_proxy_ports': [7890, 7897, 1080],
     'monitor_tick': 5,
     'monitor_interval': 30,
     'monitor_lease': 90,
@@ -58,7 +66,9 @@ FIELDS = {
     'node': ('proxy.node', 'NODE'),
     'proxy_file_path': ('proxy.file_path', 'PROXY_FILE_PATH'),
     'expected_country': ('proxy.expected_country', 'EXPECTED_COUNTRY'),
+    'bootstrap_dns': ('proxy.bootstrap_dns', 'BOOTSTRAP_DNS'),
     'dns_upstream': ('proxy.dns_upstream', 'DNS_UPSTREAM'),
+    'host_tunnel': ('proxy.host_tunnel', 'HOST_TUNNEL'),
     'timezone': ('browser.timezone', 'TIMEZONE'),
     'locale': ('browser.locale', 'LOCALE'),
     'language': ('browser.language', 'LANGUAGE'),
@@ -85,6 +95,7 @@ FIELDS = {
     'host_bridge_address': ('host_bridge.address', 'HOST_BRIDGE_ADDRESS'),
     'browser_probe_port': ('ports.browser_probe', 'BROWSER_PROBE_PORT'),
     'claude_probe_port': ('ports.claude_probe', 'CLAUDE_PROBE_PORT'),
+    'host_proxy_ports': ('ports.host_proxy', 'HOST_PROXY_PORTS'),
     'monitor_tick': ('monitor.tick', 'MONITOR_TICK'),
     'monitor_interval': ('monitor.interval', 'MONITOR_INTERVAL'),
     'monitor_lease': ('monitor.lease', 'MONITOR_LEASE'),
@@ -139,6 +150,44 @@ def boolean(value, key):
     return value
 
 
+def string_list(value, key):
+    """A YAML list, a JSON array, or a comma-separated string."""
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith('['):
+            try:
+                value = json.loads(text)
+            except ValueError:
+                raise ConfigError(key + ' must be a JSON array or a comma-separated list') from None
+        else:
+            value = text.split(',')
+    elif isinstance(value, int) and not isinstance(value, bool):
+        value = [value]
+    if not isinstance(value, list) or any(isinstance(item, (bool, dict, list)) or item is None for item in value):
+        raise ConfigError(key + ' must be a list')
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def doh_list(value, key, limit=4):
+    urls = list(dict.fromkeys(string_list(value, key)))
+    if not 1 <= len(urls) <= limit:
+        raise ConfigError(f'{key} must list 1-{limit} DNS-over-HTTPS URLs')
+    for item in urls:
+        try:
+            url = urlsplit(item)
+            address = ipaddress.IPv4Address(url.hostname or '')
+            if (url.scheme != 'https' or not address.is_global or address.is_multicast
+                    or url.username is not None or url.password is not None or url.fragment or url.query
+                    or not url.path or url.port in (0, 53, 853)):
+                raise ValueError()
+        except ValueError:
+            raise ConfigError(
+                f'{key} must be DNS-over-HTTPS URLs with a public IPv4 address and a path, '
+                'such as https://1.1.1.1/dns-query. Remove any credentials, query, or fragment.'
+            ) from None
+    return urls
+
+
 def resolve(argv=None, environ=None):
     env = os.environ if environ is None else environ
     parser = argparse.ArgumentParser(description='Run browser and Claude containers behind a fail-closed proxy gateway.')
@@ -182,7 +231,7 @@ def resolve(argv=None, environ=None):
                 value, source = DEFAULTS[name], 'default'
         setattr(args, name, value)
         args.sources[name] = source
-    for name in ('node', 'timezone', 'locale', 'language', 'instance', 'dns_upstream', 'shm_size'):
+    for name in ('node', 'timezone', 'locale', 'language', 'instance', 'shm_size', 'host_tunnel'):
         value = getattr(args, name)
         if not isinstance(value, str) or not value.strip():
             raise ConfigError(name + ' must be a non-empty string')
@@ -207,6 +256,8 @@ def resolve(argv=None, environ=None):
         args.expected_country = None
     elif re.fullmatch(r'[A-Za-z]{2}', str(args.expected_country)):
         args.expected_country = str(args.expected_country).upper()
+        if args.expected_country == 'CN':
+            raise ConfigError('expected_country cannot be CN: mainland China exits are always refused')
     else:
         raise ConfigError('expected_country must be a two-letter country code, null, or any')
     for name in ('port', 'controller_port', 'mixed_port', 'debug_port', 'browser_probe_port', 'claude_probe_port'):
@@ -332,21 +383,21 @@ def resolve(argv=None, environ=None):
     if not match or (match.group(2) in 'gG' and int(match.group(1)) < 8):
         raise ConfigError('state.size must be at least 8g, such as 64g or 1t')
     args.state_size = match.group(1) + match.group(2).upper()
-    try:
-        url = urlsplit(args.dns_upstream)
-        address = ipaddress.ip_address(url.hostname or '')
-        if (url.scheme != 'https' or address.version != 4 or not address.is_global
-                or url.username or url.password or url.fragment or url.query or not url.path
-                or url.port in (53, 853)):
-            raise ValueError()
-    except ValueError:
-        raise ConfigError('dns_upstream must be an HTTPS DoH URL with a public IPv4 host, path, and no credentials/query/fragment') from None
+    for name in ('bootstrap_dns', 'dns_upstream'):
+        setattr(args, name, doh_list(getattr(args, name), 'proxy.' + name))
+    if args.host_tunnel not in ('auto', 'dialer', 'direct', 'block'):
+        raise ConfigError('proxy.host_tunnel must be auto, dialer, direct or block')
+    ports = string_list(args.host_proxy_ports, 'ports.host_proxy')
+    # The wrapper reports the host's own system proxy port, if one is set.
+    ports += string_list(env.get('CAGED_HOST_PROXY_PORTS', ''), 'CAGED_HOST_PROXY_PORTS')
+    args.host_proxy_ports = sorted({integer(value, 'ports.host_proxy', 1, 65535) for value in ports})
     return args
 
 
 def runtime_policy(args):
     names = ('node', 'expected_country', 'dns_upstream', 'timezone', 'locale', 'language',
              'languages', 'controller_port', 'mixed_port', 'debug_port', 'browser_probe_port', 'claude_probe_port',
+             'host_proxy_ports',
              'monitor_tick', 'monitor_interval', 'monitor_lease', 'monitor_probe_timeout',
              'monitor_retry_initial', 'monitor_retry_max', 'puid', 'pgid', 'browser_ui_port')
     result = {name: getattr(args, name) for name in names}

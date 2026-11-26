@@ -9,7 +9,7 @@
 
 ## 准备
 
-- Docker：OrbStack、Docker Desktop 或 Linux Docker Engine。宿主上不需要 Python。
+- Docker：OrbStack、Docker Desktop 或 Linux Docker Engine。宿主上不需要 Python 或 Go。宿主开着 Clash 等 TUN 时用到的拨号器，会在首次需要时用 Docker 编译。
 - 一个 mihomo/Clash 格式的节点文件，其中包含独立的 AnyTLS 节点。
 - 项目放在 Linux 文件系统上（Linux 或 WSL）。环境状态需要保留文件属主和 setuid。
 - 可选：宿主上有 `python3` 和 `sshd` 程序时，才能使用 `ssh host`；不需要开启 SSH 服务。
@@ -109,7 +109,9 @@ macOS 上，整个环境是一个 ext4 镜像文件 `state/<实例>/disk.img`。
 - 先看 `./cage status` 和 `./cage logs`。网络断开时，日志里会写明原因。
 - `permission denied: ./cage`：执行 `chmod +x cage`。
 - 启动时报 `Unable to locate package`：先执行 `sudo apt-get update`。
-- 检查网络隔离是否生效：`./cage check verify`；完整的 11 项审计：`./cage check audit --instance caged-audit --port 3003`。
+- 检查网络隔离是否生效：`./cage check verify`。完整的 11 项审计：实例运行中时 `./cage check audit` 直接检查当前实例（不中断使用）；要用真实删除网关的方式演练断网，换一个新实例：`./cage check audit --instance caged-audit --port 3003`。结果保存在 `state/<实例>/last-audit.json`。
+- 宿主开着 Clash Verge 等 TUN：不需要关掉，也不需要加规则。`./cage` 会自动改用宿主拨号器，经物理网卡连接节点，启动时会打印 `Host dialer: node connection bound to en0 …`。`./cage status` 的 `host dialer` 一行显示它的状态，日志在 `state/.dialer/dialer.log`。
+- 网络断开且原因提到 “node itself may be unreachable”：节点不通，或者节点域名换了 IP。先看 `./cage status` 中的 `node address`，需要时 `./cage down && ./cage up` 重新解析。
 
 ## 文档
 
