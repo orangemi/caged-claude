@@ -29,6 +29,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -148,7 +149,12 @@ func main() {
 		if *relay {
 			s = newRelay(*dir)
 		}
+		// An outdated copy may still hold the lock for a moment while it exits.
 		unlock, err := lock(filepath.Join(*dir, s.name()+".lock"))
+		for attempt := 0; err != nil && attempt < 10; attempt++ {
+			time.Sleep(500 * time.Millisecond)
+			unlock, err = lock(filepath.Join(*dir, s.name()+".lock"))
+		}
 		if err != nil {
 			log.Printf("another %s is already running for %s", s.name(), *dir)
 			return
@@ -211,6 +217,10 @@ func (s *server) run() {
 		if s.relay {
 			routes = relayRoutes(routes)
 		}
+		if superseded(s.dir, s.name()) {
+			log.Printf("a newer %s was built; exiting", s.name())
+			return
+		}
 		s.reconcile(routes)
 		s.writeStatus()
 		if len(routes.Instances) > 0 {
@@ -236,12 +246,31 @@ func readRoutes(path string) (Routes, error) {
 		return Routes{}, err
 	}
 	for name, route := range routes.Instances {
-		if validRoute(route) != nil {
-			log.Printf("ignoring invalid route for %s: %v", name, validRoute(route))
+		if err := validRoute(route); err != nil {
+			if warned[name] != route.Revision {
+				log.Printf("ignoring invalid route for %s: %v", name, err)
+				warned[name] = route.Revision
+			}
 			delete(routes.Instances, name)
 		}
 	}
 	return routes, nil
+}
+
+// warned keeps one log line per invalid route revision.
+var warned = map[string]int64{}
+
+// superseded reports that ./cage built a newer binary for this role (dialer
+// or relay) and recorded its name in <role>.want; the old process then exits
+// so the new one can take the lock.
+func superseded(dir, role string) bool {
+	want, err := os.ReadFile(filepath.Join(dir, role+".want"))
+	if err != nil {
+		return false
+	}
+	self, err := os.Executable()
+	name := strings.TrimSpace(string(want))
+	return err == nil && name != "" && filepath.Base(self) != name
 }
 
 // validRoute accepts only literal public-looking IP targets and local listeners.
@@ -255,13 +284,15 @@ func validRoute(route Route) error {
 			return fmt.Errorf("invalid target %q", target)
 		}
 	}
+	// Unix sockets live on the Linux side even when the Windows dialer reads the
+	// route, so their paths are judged by slashes, not by this platform's rules.
 	if route.Relay != "" {
-		if path, ok := strings.CutPrefix(route.Relay, "unix:"); !ok || !filepath.IsAbs(path) {
+		if socket, ok := strings.CutPrefix(route.Relay, "unix:"); !ok || !path.IsAbs(socket) {
 			return errors.New("relay must be an absolute unix: path")
 		}
 	}
-	if path, ok := strings.CutPrefix(route.Listen, "unix:"); ok {
-		if !filepath.IsAbs(path) {
+	if socket, ok := strings.CutPrefix(route.Listen, "unix:"); ok {
+		if !path.IsAbs(socket) {
 			return errors.New("unix listener needs an absolute path")
 		}
 		return nil
