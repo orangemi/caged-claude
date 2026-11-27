@@ -93,7 +93,14 @@ CAGED_CLAUDE_TIMEZONE=Asia/Tokyo CAGED_CLAUDE_PORT=3102 ./cage up --port 3103
 | `direct` | 从不使用拨号器；发现 TUN 只警告 |
 | `block` | 发现 TUN 即拒绝启动 |
 
-拨号器由 `./cage` 用 Docker 中的 Go 工具链编译（首次约一分钟，需要拉取 `golang:1.23-alpine`），保存在 `state/.dialer/`，日志为 `state/.dialer/dialer.log`。设置 `CAGED_DIALER=0` 可以不编译、不启动它。每个实例在宿主上使用一个端口 43000–43999（按实例名推算，只监听 127.0.0.1）；Linux 上改用挂载进网关的 Unix socket。WSL 上拨号器作为 Windows 程序运行，以绕开 Windows 上的 TUN；这一路径需要 Docker Desktop 提供 `host.docker.internal`，目前未经实测。
+拨号器由 `./cage` 用 Docker 中的 Go 工具链编译（首次约一分钟，需要拉取 `golang:1.23-alpine`），保存在 `state/.dialer/`，日志为 `state/.dialer/dialer.log`。设置 `CAGED_DIALER=0` 可以不编译、不启动它。每个实例在宿主上使用一个端口 43000–43999（按实例名推算，只监听 127.0.0.1）；Linux 上改用挂载进网关的 Unix socket。WSL 上，TUN 装在 Windows 一侧，WSL 的流量也要经过 Windows 路由，所以拨号器作为 Windows 程序运行（`./cage` 经 WSL 互操作启动它，并按 Windows 的路由自行判断 TUN）。网关如何连到它取决于 Docker：
+
+| WSL 上的 Docker | 网关到 Windows 拨号器 | 要求 |
+| --- | --- | --- |
+| WSL 里的 Docker Engine | 挂载的 Unix socket → WSL 里以 relay 模式运行的同一程序 → Windows `127.0.0.1:<端口>` | WSL 网络模式为 mirrored（`%UserProfile%\.wslconfig` 中 `networkingMode=mirrored`，然后 `wsl --shutdown`）；relay 日志在 `state/.dialer/relay.log` |
+| Docker Desktop | `host.docker.internal:<端口>` | 无 |
+
+WSL 为 NAT 模式且使用 Docker Engine 时，WSL 连不到 Windows 的回环地址：`auto` 会警告并直连，`dialer` 会停止启动并说明原因。Docker Desktop 这一路径目前未经实测。
 
 `ports.host_proxy`（默认 `[7890, 7897, 1080]`）列出审计时笼子必须连不到的宿主代理端口；`./cage` 还会自动加上宿主当前的系统代理端口（macOS 读 `scutil --proxy`，Linux 读指向本机的 `http_proxy` 等变量）。
 

@@ -264,10 +264,13 @@ def run_audit(session, live=False):
                 volumes = {mount['Destination']: mount.get('Name') for mount in mounts if mount['Type'] == 'volume'}
                 if volumes != session.expected_volumes(role) or any(mount['Type'] not in ('bind', 'volume') for mount in mounts):
                     raise Failed(role + ' 容器有白名单以外的卷')
-                # Only the probe runtime and the host bridge socket directory are read-only.
-                readonly = set(session.readonly_mounts()) if role == 'claude' else set()
-                if not all(mount['RW'] != (mount['Destination'] in readonly) for mount in mounts):
-                    raise Failed(role + ' 容器的状态目录只读，或探针代码可写')
+                # What the cage must not change: the probe code the audit runs inside
+                # it, the host bridge keys, the dialer socket directory. Whether the
+                # other mounts are writable is a matter of function, not isolation.
+                writable = [mount['Destination'] for mount in mounts
+                            if mount['RW'] and mount['Destination'] in session.readonly_destinations(role)]
+                if writable:
+                    raise Failed(f'{role} 容器中应只读的挂载可写：' + '、'.join(writable))
                 if not state['HostConfig']['AutoRemove']:
                     raise Failed(role + ' 容器退出时不会清理临时数据')
             if not observed['private_paths_absent']:

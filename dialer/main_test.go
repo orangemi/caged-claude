@@ -16,6 +16,8 @@ func TestValidRouteAcceptsOnlyLiteralTargetsAndLocalListeners(t *testing.T) {
 	good := []Route{
 		{Listen: "127.0.0.1:43001", Targets: []string{"203.0.113.1:443", "203.0.113.2:443"}},
 		{Listen: "unix:/state/.dialer/sock/a/dialer.sock", Targets: []string{"203.0.113.1:7210"}},
+		// The Windows dialer reads Linux socket paths it never uses; they must still validate there.
+		{Listen: "127.0.0.1:43001", Targets: []string{"203.0.113.1:7210"}, Relay: "unix:/home/user/Projects/caged-claude/state/.dialer/sock/a/dialer.sock"},
 	}
 	for _, route := range good {
 		if err := validRoute(route); err != nil {
@@ -195,4 +197,42 @@ func freePort(t *testing.T) string {
 	address := listener.Addr().String()
 	listener.Close()
 	return address
+}
+
+func TestRelayForwardsSocketsToTheWindowsDialerPort(t *testing.T) {
+	windows := echo(t, "windows-dialer")
+	socket := filepath.Join(t.TempDir(), "sock", "dialer.sock")
+	routes := Routes{Instances: map[string]Route{
+		"wsl":   {Listen: windows, Targets: []string{"203.0.113.1:443"}, Relay: "unix:" + socket, Revision: 1},
+		"plain": {Listen: "127.0.0.1:43002", Targets: []string{"203.0.113.1:443"}, Revision: 1},
+	}}
+	relayed := relayRoutes(routes)
+	if len(relayed.Instances) != 1 || relayed.Instances["wsl"].Targets[0] != windows {
+		t.Fatalf("relayed %+v", relayed)
+	}
+	s := newRelay(t.TempDir())
+	s.reconcile(relayed)
+	// No physical interface is needed or looked up on the relay side.
+	if got := roundTrip(t, "unix", socket, "x"); got != "windows-dialer:x" {
+		t.Fatalf("reply %q", got)
+	}
+	if s.name() != "relay" || validRoute(Route{Listen: "127.0.0.1:1", Targets: []string{"1.1.1.1:1"}, Relay: "relative.sock"}) == nil {
+		t.Fatal("relay name or relay path validation")
+	}
+}
+
+func TestSupersededByANewerBuild(t *testing.T) {
+	dir := t.TempDir()
+	if superseded(dir, "dialer") {
+		t.Fatal("no want file means current")
+	}
+	self, _ := os.Executable()
+	os.WriteFile(filepath.Join(dir, "dialer.want"), []byte(filepath.Base(self)+"\n"), 0o600)
+	if superseded(dir, "dialer") {
+		t.Fatal("same binary is current")
+	}
+	os.WriteFile(filepath.Join(dir, "dialer.want"), []byte("caged-dialer-windows-amd64-1.exe\n"), 0o600)
+	if !superseded(dir, "dialer") || superseded(dir, "relay") {
+		t.Fatal("a different wanted binary supersedes only its own role")
+	}
 }
