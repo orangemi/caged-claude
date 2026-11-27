@@ -29,12 +29,15 @@ LOCATION_SOURCES = [
     ('geojs', 'https://get.geojs.io/v1/ip/geo/{ip}.json', False),
     ('ipapi.co', 'https://ipapi.co/{ip}/json/', False),
 ]
-# Shown at start for reference only, never a pass or fail: two more services, each
-# reporting the address it sees and the network it belongs to. A node that sends
-# different destinations out through different addresses shows up here.
+# Shown at start for reference only, never a pass or fail: more services, each
+# reporting the address it sees. A node that sends different destinations out
+# through different addresses shows up here; Cloudflare is asked both at the
+# literal 1.1.1.1 the browser check uses and at an ordinary hostname.
 REFERENCE_SOURCES = [
     ('ipinfo.io', 'https://ipinfo.io/json'),
     ('ip2location.io', 'https://api.ip2location.io/'),
+    ('Cloudflare 1.1.1.1', 'https://1.1.1.1/cdn-cgi/trace'),
+    ('Cloudflare www', 'https://www.cloudflare.com/cdn-cgi/trace'),
 ]
 # Only distinguishes "node unreachable" from "node blocks the IP services".
 REACHABILITY = 'https://www.gstatic.com/generate_204'
@@ -172,6 +175,14 @@ def reference(fetch, sources=REFERENCE_SOURCES):
         status, body = fetch(url, REQUEST_TIMEOUT)
         if status != 200:
             raise RuntimeError(f'HTTP {status}')
+        if url.endswith('/cdn-cgi/trace'):
+            # key=value lines; colo is the Cloudflare data centre that answered.
+            fields = dict(line.split('=', 1) for line in body.splitlines() if '=' in line)
+            address = public_ipv4(fields.get('ip', ''))
+            if not address:
+                raise RuntimeError('no public IPv4 in the response')
+            return {'ip': address, 'country': fields.get('loc', '').upper()[:2] or None,
+                    'network': f'Cloudflare {fields["colo"]}' if fields.get('colo') else None}
         try:
             value = json.loads(body)
         except ValueError:

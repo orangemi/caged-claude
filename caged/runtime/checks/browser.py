@@ -100,13 +100,17 @@ def observe(fault=False, settings_only=False):
                 time.sleep(0.2)
             return None
 
+        def page_ip(name, url):
+            return egress.parse_ip(name, page_text(url + ('&' if '?' in url else '?') + 'caged=' + uuid.uuid4().hex, 12) or '')
+
         # Positive control for the exact literal-IP origin used by the fault
         # probe. A certificate error must never look like a working kill switch.
+        # Only a control: a node may route 1.1.1.1 differently from other sites,
+        # so the exit comes from the services in the terminal's order below.
+        literal = page_ip(*next(item for item in egress.IP_SOURCES if item[0] == 'cloudflare'))
         ip, source, failures = None, None, {}
-        for name, url in [item for item in egress.IP_SOURCES if item[0] == 'cloudflare'] + [
-                item for item in egress.IP_SOURCES if item[0] != 'cloudflare']:
-            text = page_text(url + ('&' if '?' in url else '?') + 'caged=' + uuid.uuid4().hex, 12)
-            ip = egress.parse_ip(name, text or '')
+        for name, url in egress.IP_SOURCES:
+            ip = literal if name == 'cloudflare' else page_ip(name, url)
             if ip:
                 source = name
                 break
@@ -132,7 +136,7 @@ def observe(fault=False, settings_only=False):
             raise RuntimeError('Browser language preferences did not match the configured language')
         value.update(ip=ip, country=country, ip_source=source, location_source=located_by,
                      dns_policies={row['name']: row['value'] for row in policies},
-                     literal_ip_positive_control='passed' if source == 'cloudflare' else 'unavailable')
+                     literal_ip_positive_control='passed' if literal else 'unavailable', literal_ip_exit=literal)
         return value
     finally:
         client.close()

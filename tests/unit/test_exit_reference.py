@@ -10,6 +10,7 @@ from caged.runtime.checks import egress
 
 IPINFO = {'ip': '9.9.9.9', 'country': 'US', 'org': 'AS7922 Example Cable'}
 IP2LOCATION = {'ip': '9.9.9.9', 'country_code': 'US', 'asn': '7922', 'as': 'Example Cable', 'is_proxy': False}
+TRACE = 'fl=1\nip=1.0.0.9\nts=1\nloc=us\ncolo=LAX\nwarp=off\n'
 
 
 def fetcher(answers):
@@ -24,17 +25,25 @@ def fetcher(answers):
 class Reference(unittest.TestCase):
     def test_each_service_reports_its_address_country_and_network(self):
         result = egress.reference(fetcher({'ipinfo.io': (200, json.dumps(IPINFO)),
-                                           'ip2location.io': (200, json.dumps(IP2LOCATION))}))
+                                           'ip2location.io': (200, json.dumps(IP2LOCATION)),
+                                           'Cloudflare 1.1.1.1': (200, TRACE),
+                                           'Cloudflare www': (200, TRACE.replace('1.0.0.9', '9.9.9.9'))}))
         self.assertEqual(result, {
             'ipinfo.io': {'ip': '9.9.9.9', 'country': 'US', 'network': 'AS7922 Example Cable'},
-            'ip2location.io': {'ip': '9.9.9.9', 'country': 'US', 'network': 'AS7922 Example Cable', 'proxy': False}})
+            'ip2location.io': {'ip': '9.9.9.9', 'country': 'US', 'network': 'AS7922 Example Cable', 'proxy': False},
+            'Cloudflare 1.1.1.1': {'ip': '1.0.0.9', 'country': 'US', 'network': 'Cloudflare LAX'},
+            'Cloudflare www': {'ip': '9.9.9.9', 'country': 'US', 'network': 'Cloudflare LAX'}})
 
     def test_a_failing_service_is_reported_not_raised(self):
-        result = egress.reference(fetcher({'ipinfo.io': (429, ''), 'ip2location.io': (200, 'not json')}))
-        self.assertEqual(result, {'ipinfo.io': {'error': 'HTTP 429'}, 'ip2location.io': {'error': 'invalid response'}})
-        result = egress.reference(fetcher({'ipinfo.io': TimeoutError('private'), 'ip2location.io': (200, '{"ip": "10.0.0.1"}')}))
-        self.assertEqual(result, {'ipinfo.io': {'error': 'connection failed'},
-                                  'ip2location.io': {'error': 'no public IPv4 in the response'}})
+        result = egress.reference(fetcher({'ipinfo.io': (429, ''), 'ip2location.io': (200, 'not json'),
+                                           'Cloudflare 1.1.1.1': (200, 'ip=10.0.0.1\n'), 'Cloudflare www': (503, '')}))
+        self.assertEqual(result, {'ipinfo.io': {'error': 'HTTP 429'}, 'ip2location.io': {'error': 'invalid response'},
+                                  'Cloudflare 1.1.1.1': {'error': 'no public IPv4 in the response'},
+                                  'Cloudflare www': {'error': 'HTTP 503'}})
+        result = egress.reference(fetcher({'ipinfo.io': TimeoutError('private'), 'ip2location.io': (200, '{"ip": "10.0.0.1"}'),
+                                           'Cloudflare 1.1.1.1': (200, TRACE), 'Cloudflare www': (200, TRACE)}))
+        self.assertEqual((result['ipinfo.io'], result['ip2location.io']),
+                         ({'error': 'connection failed'}, {'error': 'no public IPv4 in the response'}))
 
 
 class StartLine(unittest.TestCase):
