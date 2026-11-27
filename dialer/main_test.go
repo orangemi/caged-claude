@@ -196,3 +196,25 @@ func freePort(t *testing.T) string {
 	listener.Close()
 	return address
 }
+
+func TestRelayForwardsSocketsToTheWindowsDialerPort(t *testing.T) {
+	windows := echo(t, "windows-dialer")
+	socket := filepath.Join(t.TempDir(), "sock", "dialer.sock")
+	routes := Routes{Instances: map[string]Route{
+		"wsl":   {Listen: windows, Targets: []string{"203.0.113.1:443"}, Relay: "unix:" + socket, Revision: 1},
+		"plain": {Listen: "127.0.0.1:43002", Targets: []string{"203.0.113.1:443"}, Revision: 1},
+	}}
+	relayed := relayRoutes(routes)
+	if len(relayed.Instances) != 1 || relayed.Instances["wsl"].Targets[0] != windows {
+		t.Fatalf("relayed %+v", relayed)
+	}
+	s := newRelay(t.TempDir())
+	s.reconcile(relayed)
+	// No physical interface is needed or looked up on the relay side.
+	if got := roundTrip(t, "unix", socket, "x"); got != "windows-dialer:x" {
+		t.Fatalf("reply %q", got)
+	}
+	if s.name() != "relay" || validRoute(Route{Listen: "127.0.0.1:1", Targets: []string{"1.1.1.1:1"}, Relay: "relative.sock"}) == nil {
+		t.Fatal("relay name or relay path validation")
+	}
+}

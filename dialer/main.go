@@ -7,7 +7,9 @@
 // gateway's mihomo and the node. Connections are never dialed without the
 // interface binding: without a usable physical interface they are refused.
 //
-//	caged-dialer serve --dir DIR   run until routes.json has been empty for a while
+//	caged-dialer serve --dir DIR           run until routes.json has been empty for a while
+//	caged-dialer serve --relay --dir DIR   WSL side: relay each route's Unix socket to the
+//	                                       Windows dialer's loopback port (needs mirrored networking)
 //	caged-dialer version
 //
 // One process serves every instance of a project; a lock file in DIR keeps it
@@ -51,6 +53,9 @@ type Route struct {
 	Targets  []string `json:"targets"` // "ip:port", tried in order
 	SNI      string   `json:"sni"`
 	Revision int64    `json:"revision"`
+	// Relay, on WSL with Docker Engine: the Unix socket the gateway dials. The
+	// Linux-side relay forwards it to Listen, where the Windows dialer serves.
+	Relay string `json:"relay,omitempty"`
 }
 
 type Routes struct {
@@ -109,6 +114,7 @@ type instance struct {
 
 type server struct {
 	dir       string
+	relay     bool // only forward each route's Relay socket to its Listen address
 	mu        sync.Mutex
 	instances map[string]*instance
 	iface     Iface
@@ -133,17 +139,22 @@ func main() {
 	case "serve":
 		flags := flag.NewFlagSet("serve", flag.ExitOnError)
 		dir := flags.String("dir", "", "state directory holding routes.json")
+		relay := flags.Bool("relay", false, "relay Unix sockets to the Windows dialer (WSL)")
 		_ = flags.Parse(os.Args[2:])
 		if *dir == "" {
 			log.Fatal("--dir is required")
 		}
-		unlock, err := lock(filepath.Join(*dir, "dialer.lock"))
+		s := newServer(*dir)
+		if *relay {
+			s = newRelay(*dir)
+		}
+		unlock, err := lock(filepath.Join(*dir, s.name()+".lock"))
 		if err != nil {
-			log.Printf("another dialer is already running for %s", *dir)
+			log.Printf("another %s is already running for %s", s.name(), *dir)
 			return
 		}
 		defer unlock()
-		newServer(*dir).run()
+		s.run()
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command:", os.Args[1])
 		os.Exit(2)
@@ -158,16 +169,47 @@ func newServer(dir string) *server {
 	return s
 }
 
+// newRelay hands connections to a local port without any interface binding:
+// the Windows dialer behind that port binds the physical interface itself.
+func newRelay(dir string) *server {
+	s := &server{dir: dir, relay: true, instances: map[string]*instance{}, dial: func(_ Iface, target string) (net.Conn, error) {
+		return (&net.Dialer{Timeout: dialTimeout}).Dial("tcp", target)
+	}}
+	s.verify = func(*instance, Route) {}
+	return s
+}
+
+func (s *server) name() string {
+	if s.relay {
+		return "relay"
+	}
+	return "dialer"
+}
+
+// relayRoutes keeps the routes that name a relay socket, pointed at their Listen address.
+func relayRoutes(routes Routes) Routes {
+	relayed := Routes{Instances: map[string]Route{}}
+	for name, route := range routes.Instances {
+		if route.Relay != "" {
+			relayed.Instances[name] = Route{Listen: route.Relay, Targets: []string{route.Listen}, Revision: route.Revision}
+		}
+	}
+	return relayed
+}
+
 func (s *server) run() {
-	log.Printf("dialer %s serving %s", version, s.dir)
+	log.Printf("%s %s serving %s", s.name(), version, s.dir)
 	started, idle := time.Now(), time.Now()
 	for tick := 0; ; tick++ {
-		if tick%10 == 0 {
+		if tick%10 == 0 && !s.relay {
 			s.refreshInterface(true)
 		}
 		routes, err := readRoutes(filepath.Join(s.dir, "routes.json"))
 		if err != nil {
 			log.Printf("routes: %v", err)
+		}
+		if s.relay {
+			routes = relayRoutes(routes)
 		}
 		s.reconcile(routes)
 		s.writeStatus()
@@ -211,6 +253,11 @@ func validRoute(route Route) error {
 		host, port, err := net.SplitHostPort(target)
 		if err != nil || net.ParseIP(host) == nil || port == "" || port == "0" {
 			return fmt.Errorf("invalid target %q", target)
+		}
+	}
+	if route.Relay != "" {
+		if path, ok := strings.CutPrefix(route.Relay, "unix:"); !ok || !filepath.IsAbs(path) {
+			return errors.New("relay must be an absolute unix: path")
 		}
 	}
 	if path, ok := strings.CutPrefix(route.Listen, "unix:"); ok {
@@ -329,7 +376,11 @@ func boundDialer(iface Iface) *net.Dialer {
 func (s *server) forward(i *instance, client net.Conn) {
 	defer client.Close()
 	route := i.route.Load()
-	iface, err := s.refreshInterface(false)
+	var iface Iface
+	var err error
+	if !s.relay {
+		iface, err = s.refreshInterface(false)
+	}
 	var upstream net.Conn
 	if err == nil {
 		for _, target := range route.Targets {
@@ -477,6 +528,9 @@ func (s *server) writeStatus() {
 		return
 	}
 	path := filepath.Join(s.dir, "status.json")
+	if s.relay {
+		path = filepath.Join(s.dir, "relay-status.json")
+	}
 	temporary := path + ".tmp"
 	if os.WriteFile(temporary, data, 0o600) == nil {
 		_ = os.Rename(temporary, path)

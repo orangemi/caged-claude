@@ -40,11 +40,25 @@ class Bookkeeping(DialerTest):
         dialer.unregister('one')
         self.assertEqual(set(json.loads((self.folder / 'routes.json').read_text())['instances']), {'other'})
 
-    def test_linux_uses_a_socket_and_wsl_uses_tcp(self):
+    def test_linux_uses_a_socket_and_wsl_depends_on_docker(self):
         route, _ = dialer.register('one', ['203.0.113.1'], 443, 'n', {'CAGED_HOST_OS': 'Linux'})
         self.assertEqual(route['listen'], f'unix:{self.folder}/sock/one/dialer.sock')
+        self.assertNotIn('relay', route)
         self.assertTrue((self.folder / 'sock' / 'one').is_dir())
-        self.assertEqual(dialer.kind({'CAGED_HOST_OS': 'Linux', 'CAGED_HOST_WSL': '1'}), 'tcp')
+        wsl = {'CAGED_HOST_OS': 'Linux', 'CAGED_HOST_WSL': '1'}
+        self.assertEqual(dialer.kind({**wsl, 'CAGED_DOCKER_DESKTOP': '1'}), 'tcp')
+        self.assertEqual(dialer.kind(wsl), 'relay')
+        # Docker Engine in WSL: the Windows dialer listens on loopback, the relay serves the socket.
+        route, _ = dialer.register('two', ['203.0.113.1'], 443, 'n', wsl)
+        self.assertEqual((route['listen'], route['relay']),
+                         (f'127.0.0.1:{dialer.port("two")}', f'unix:{self.folder}/sock/two/dialer.sock'))
+
+    def test_wait_relay_needs_a_listening_relay(self):
+        with self.assertRaisesRegex(CageError, 'WSL relay to the Windows dialer is not running'):
+            dialer.wait_relay('one', timeout=0.5)
+        (self.folder / 'relay-status.json').write_text(json.dumps(
+            {'heartbeat': time.time(), 'instances': {'one': {'listen': 'unix:/s', 'listening': True}}}))
+        self.assertTrue(dialer.wait_relay('one', timeout=1)['listening'])
 
     def test_stale_status_means_not_running(self):
         self.assertIsNone(dialer.status())
@@ -68,7 +82,7 @@ class NodePath(DialerTest):
         args = SimpleNamespace(host_tunnel=mode, instance='one', host_bridge_address='0.250.250.254')
         return SimpleNamespace(args=args, dialer_registered=False, node_path={'kind': 'direct'})
 
-    def choose(self, mode, tunnels=None, check=None, running=True, system='Darwin'):
+    def choose(self, mode, tunnels=None, check=None, running=True, system='Darwin', env=None, relay=None):
         session = self.session(mode)
         if running:
             self.write_status(interface='en0')
@@ -79,7 +93,8 @@ class NodePath(DialerTest):
         with patch.object(proxy, 'check_host_routes', return_value={'tunnels': tunnels or {}}), \
                 patch.object(dialer, 'wait_check', side_effect=answer), \
                 patch.object(dialer, 'wait_status', side_effect=dialer.status), \
-                patch.dict('os.environ', {'CAGED_HOST_OS': system}), \
+                patch.object(dialer, 'wait_relay', side_effect=relay or (lambda instance: {'listening': True})), \
+                patch.dict('os.environ', {'CAGED_HOST_OS': system, **(env or {})}), \
                 redirect_stdout(output), redirect_stderr(errors):
             path = Session.choose_node_path(session, NODE, ['203.0.113.1'], 'node.example')
         return session, path, output.getvalue() + errors.getvalue()
@@ -109,6 +124,31 @@ class NodePath(DialerTest):
         self.assertEqual((node['server'], node['interface-name'], node['sni'], addresses), ('127.0.0.1', 'lo', '203.0.113.1', []))
         self.assertEqual(mounts, ['--mount', f'type=bind,src={self.folder}/sock/one,dst=/run/caged-dialer,readonly'])
 
+    def test_wsl_with_docker_engine_relays_through_a_socket_with_mirrored_networking(self):
+        wsl = {'CAGED_HOST_WSL': '1', 'CAGED_WSL_NETWORKING': 'mirrored'}
+        _, path, _ = self.choose('auto', {'1.1.1.1': 'Mihomo'}, self.ok, system='Linux', env=wsl)
+        self.assertEqual((path['kind'], path['socket']), ('relay', '/run/caged-dialer/dialer.sock'))
+        node, addresses, mounts = Session.gateway_endpoint(
+            SimpleNamespace(args=self.session('auto').args, node_path=path), NODE, ['203.0.113.1'], 'node.example')
+        self.assertEqual((node['server'], node['interface-name'], addresses), ('127.0.0.1', 'lo', []))
+        self.assertEqual(mounts[1], f'type=bind,src={self.folder}/sock/one,dst=/run/caged-dialer,readonly')
+
+    def test_wsl_relay_problems_fall_back_only_in_auto(self):
+        nat = {'CAGED_HOST_WSL': '1', 'CAGED_WSL_NETWORKING': 'nat'}
+        session, path, output = self.choose('auto', {'1.1.1.1': 'Mihomo'}, self.ok, system='Linux', env=nat)
+        self.assertEqual((path, session.dialer_registered), ({'kind': 'direct'}, False))
+        self.assertIn('networkingMode=mirrored', output)
+        with self.assertRaisesRegex(CageError, 'WSL networking is nat'):
+            self.choose('dialer', check=self.ok, system='Linux', env=nat)
+
+        def missing(instance):
+            raise CageError('The WSL relay to the Windows dialer is not running; see state/.dialer/relay.log')
+        mirrored = {'CAGED_HOST_WSL': '1', 'CAGED_WSL_NETWORKING': 'mirrored'}
+        session, path, output = self.choose('auto', {'1.1.1.1': 'Mihomo'}, self.ok, system='Linux', env=mirrored, relay=missing)
+        self.assertEqual((path, session.dialer_registered), ({'kind': 'direct'}, False))
+        self.assertIn('relay.log', output)
+        self.assertEqual(json.loads((self.folder / 'routes.json').read_text())['instances'], {})
+
     def test_block_and_direct_modes(self):
         with self.assertRaisesRegex(CageError, 'non-physical interface'):
             self.choose('block', {'1.1.1.1': 'utun4'})
@@ -128,7 +168,7 @@ class NodePath(DialerTest):
         session = self.session('auto')
         with patch.object(proxy, 'check_host_routes', return_value={'tunnels': {}}), \
                 patch.object(dialer, 'wait_check', return_value={'revision': 0, 'interface': 'Ethernet', **self.ok}), \
-                patch.dict('os.environ', {'CAGED_HOST_OS': 'Linux', 'CAGED_HOST_WSL': '1'}), \
+                patch.dict('os.environ', {'CAGED_HOST_OS': 'Linux', 'CAGED_HOST_WSL': '1', 'CAGED_DOCKER_DESKTOP': '1'}), \
                 redirect_stdout(io.StringIO()):
             path = Session.choose_node_path(session, NODE, ['203.0.113.1'], 'node.example')
         self.assertEqual((path['kind'], path['tunnel']), ('tcp', '1.1.1.1 via Meta'))

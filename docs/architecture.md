@@ -35,8 +35,9 @@ Docker                                                              │
 
 ```text
 网关 mihomo ──TCP──▶ 宿主拨号器 ──绑定 en0 等物理网卡──▶ 节点
-            macOS/Windows：host.docker.internal:<端口>（防火墙只放行这一个端口）
+            macOS、Docker Desktop：host.docker.internal:<端口>（防火墙只放行这一个端口）
             Linux：挂载进网关的 Unix socket（网关不再直接连 eth0 以外的任何地址）
+            WSL + Docker Engine：同 Linux 的 socket，由 WSL 里的 relay 转给 Windows 上的拨号器
 ```
 
 启动时，拨号器对每个实例做一次对照：经物理网卡和经宿主默认路由分别与节点做 TLS 握手，并比较两条路径的出口 IP。`proxy.host_tunnel: auto`（默认）在发现宿主 TUN 时启用拨号器：物理网卡能握手就使用；只有默认路由能握手（例如企业 VPN 也拦截绑定网卡的连接）则警告并直连；都不能握手就停止启动并说明原因。`dialer` 总是使用拨号器，`direct` 从不使用（只警告），`block` 发现 TUN 即拒绝启动。一个项目只运行一个拨号器进程，路由清空约 20 秒后自行退出，`./cage status` 显示它的网卡、对照结果与连接计数。
