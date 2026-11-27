@@ -184,3 +184,13 @@ class NodePath(DialerTest):
         self.assertEqual(json.loads((self.folder / 'routes.json').read_text())['instances'], {})
         with self.assertRaisesRegex(CageError, 'not reachable'):
             self.choose('dialer', check=only_default)
+
+
+class ReadOnlyMounts(unittest.TestCase):
+    def test_only_a_socket_path_makes_the_gateway_mount_read_only(self):
+        session = SimpleNamespace(node_path={'kind': 'relay'}, readonly_mounts=lambda: {'/caged-runtime/caged': 'src'})
+        self.assertEqual(Session.readonly_destinations(session, 'gateway'), {'/run/caged-dialer'})
+        self.assertEqual(Session.readonly_destinations(session, 'claude'), {'/caged-runtime/caged'})
+        self.assertEqual(Session.readonly_destinations(session, 'browser'), set())
+        session.node_path = {'kind': 'tcp'}
+        self.assertEqual(Session.readonly_destinations(session, 'gateway'), set())

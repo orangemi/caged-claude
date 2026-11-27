@@ -264,10 +264,12 @@ def run_audit(session, live=False):
                 volumes = {mount['Destination']: mount.get('Name') for mount in mounts if mount['Type'] == 'volume'}
                 if volumes != session.expected_volumes(role) or any(mount['Type'] not in ('bind', 'volume') for mount in mounts):
                     raise Failed(role + ' 容器有白名单以外的卷')
-                # Only the probe runtime and the host bridge socket directory are read-only.
-                readonly = set(session.readonly_mounts()) if role == 'claude' else set()
-                if not all(mount['RW'] != (mount['Destination'] in readonly) for mount in mounts):
-                    raise Failed(role + ' 容器的状态目录只读，或探针代码可写')
+                # Only the probe runtime, the host bridge and the dialer socket directories are read-only.
+                readonly = session.readonly_destinations(role)
+                wrong = [mount['Destination'] for mount in mounts if mount['RW'] == (mount['Destination'] in readonly)]
+                if wrong:
+                    raise Failed(f'{role} 容器的挂载读写方式不符合预期：' + '、'.join(
+                        f'{path}（应为{"只读" if path in readonly else "可写"}）' for path in wrong))
                 if not state['HostConfig']['AutoRemove']:
                     raise Failed(role + ' 容器退出时不会清理临时数据')
             if not observed['private_paths_absent']:

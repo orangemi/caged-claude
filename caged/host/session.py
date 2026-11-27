@@ -294,6 +294,14 @@ class Session:
         return {stateful.RUNTIME + '/caged': str(ROOT / 'caged'),
                 stateful.RUNTIME + '/entrypoint.sh': str(ROOT / 'containers' / 'claude' / 'entrypoint.sh')}
 
+    def readonly_destinations(self, role):
+        """Mount destinations of a role's container that must be read-only; all others are writable."""
+        if role == 'claude':
+            return set(self.readonly_mounts())
+        if role == 'gateway' and dialer.uses_socket(self.node_path.get('kind')):
+            return {dialer.MOUNT}  # the gateway only connects to the dialer's socket
+        return set()
+
     def readonly_mounts(self):
         """Probe runtime and, when enabled, the host bridge socket directory."""
         mounts = self.runtime_mounts()
