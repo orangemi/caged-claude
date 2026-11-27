@@ -115,7 +115,8 @@ def main(args):
             return
         width = max((len(str(node['name'])) for node in nodes), default=0)
         for node in nodes:
-            ui.line(f'{node["name"]!s:<{width}}  {node["type"]!s:<8}  {"UDP" if node.get("udp") else ""}'.rstrip())
+            note = f'not supported: {node["unsupported"]}' if node['unsupported'] else ''
+            ui.line(f'{node["name"]!s:<{width}}  {node["type"]!s:<9}  {"UDP" if node.get("udp") else "   "}  {note}'.rstrip())
         return
     if args.action == 'build':
         for role in images.IMAGES:

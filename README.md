@@ -10,7 +10,7 @@
 ## 准备
 
 - Docker：OrbStack、Docker Desktop 或 Linux Docker Engine。宿主上不需要 Python 或 Go。宿主开着 Clash 等 TUN 时用到的拨号器，会在首次需要时用 Docker 编译。
-- 一个 mihomo/Clash 格式的节点文件，其中包含独立的 AnyTLS 节点。
+- 一个 mihomo/Clash 格式的节点文件，其中包含 TCP 上 TLS 的独立节点：AnyTLS、Trojan、VLESS 或 VMess（含 Reality，见 [配置说明](docs/configuration.md#支持的节点)）。
 - 项目放在 Linux 文件系统上（Linux 或 WSL）。环境状态需要保留文件属主和 setuid。
 - 可选：宿主上有 `python3` 和 `sshd` 程序时，才能使用 `ssh host`；不需要开启 SSH 服务。
 
@@ -18,7 +18,7 @@
 
 ```bash
 ./cage init --mihomo /path/to/mihomo.yaml   # 生成 config/，并放入你的节点文件
-./cage nodes                                # 列出节点，复制一个 anytls 节点名
+./cage nodes                                # 列出节点，复制一个支持的节点名
 ```
 
 编辑 `config/app.yaml`，至少填写这几项：

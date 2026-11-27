@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from . import yamlfile
 from .errors import CageError
 from .paths import IN_LAUNCHER
+from caged.shared import protocols
 
 # The gateway firewall allows each pinned address; mihomo fails over between them.
 MAX_ADDRESSES = 4
@@ -46,14 +47,14 @@ def load_node(path, name=None):
     config = load_config(path)
     nodes = [node for node in config.get('proxies') or [] if isinstance(node, dict)]
     if name is None:
-        return [{'name': node.get('name'), 'type': node.get('type'), 'udp': node.get('udp')} for node in nodes]
+        return [{'name': node.get('name'), 'type': node.get('type'), 'udp': node.get('udp'),
+                 'unsupported': (protocols.check(node) or [None])[0]} for node in nodes]
     node = next((node for node in nodes if node.get('name') == name), None)
     if node is None:
         raise CageError('Selected node was not found in the proxy configuration.')
-    if node.get('type') != 'anytls':
-        raise CageError('This first version supports standalone AnyTLS nodes only.')
-    if node.get('dialer-proxy'):
-        raise CageError('A chained node must be expanded before it can be used independently.')
+    problem = protocols.problem(node)
+    if problem:
+        raise CageError(problem)
     return node
 
 
@@ -208,14 +209,14 @@ def pin_node(node, resolvers, source=()):
     """(node with a fixed public IPv4 server, every pinned address).
 
     The node file's own proxy-server-nameserver entries are tried before the
-    configured bootstrap resolvers. A hostname node keeps its name as the SNI."""
+    configured bootstrap resolvers. A hostname node keeps its name for TLS (protocols.keep_name)."""
     proxy = copy.deepcopy(node)
     server = str(proxy['server'])
     try:
         address = ipaddress.ip_address(server)
     except ValueError:
         addresses = lookup(server, list(dict.fromkeys([*source, *resolvers])))
-        proxy.setdefault('sni', server)
+        proxy = protocols.keep_name(proxy, server)
     else:
         if not usable(address):
             raise CageError('The selected proxy node has no usable public IPv4 address. '

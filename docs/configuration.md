@@ -23,7 +23,24 @@ config/mihomo.yaml   # mihomo 节点和凭证
 
 实际 `config/mihomo.yaml` 包含节点凭证，权限设为 `600`，随整个 `config/` 目录一起被 Git 忽略。它在会话结束后保留。配置更新后重启会话读取，不会自动同步 Mac 的后续修改。
 
-第一版支持独立 AnyTLS 节点；有 `dialer-proxy` 的链式节点会拒绝启动，而不是遗漏链路参数。复制的文件保留原始配置内容；容器运行时仍只提取所选节点，重新生成全局代理配置。
+复制的文件保留原始配置内容；容器运行时仍只提取所选节点，重新生成全局代理配置。
+
+### 支持的节点
+
+网关防火墙只放行到节点地址的 TCP，宿主拨号器只中继 TCP，并在启动前与节点做一次 TLS 握手确认可达。所以节点必须是 **TCP 上的 TLS**；协议本身由 mihomo 端到端处理，caged 不改动它的参数。
+
+| 协议 | 要求 | TLS 名称字段 |
+|---|---|---|
+| `anytls`、`trojan` | 无 | `sni` |
+| `vless`、`vmess` | `tls: true`（Reality 也需要）；传输 `network` 为 `tcp`（默认）、`ws` 或 `grpc` | `servername` |
+
+- 节点 `server` 是域名时，启动器经 DoH 解析并换成固定 IP；TLS 名称字段没填时补上原域名。`ws` 传输没有 `Host` 头时，同样补原域名。已填写的值保持不变，例如 Reality 的 `servername`。
+- 以下节点会拒绝启动，并说明原因：
+  - `hysteria`、`hysteria2`、`tuic`、`wireguard` 需要到节点的 UDP；
+  - `ss` 等其他协议、不开 TLS 的 `vless`/`vmess`、`h2` 等其他传输暂不支持；
+  - 有 `dialer-proxy` 的链式节点会拒绝，而不是遗漏链路参数。
+- `./cage nodes` 列出全部节点，不支持的节点后面注明原因，例如 `not supported: needs UDP to the node`。
+- 节点自身的 UDP（如 `udp: true`）经 TCP 连接承载，不受上面的限制。
 
 ## 配置优先级
 

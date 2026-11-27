@@ -11,7 +11,7 @@ from .config import runtime_policy, start_timezone
 from .errors import CageError
 from .instance import Instance
 from .paths import ROOT, LABEL, LAYOUT_LABEL, LAYOUT_VERSION, IN_LAUNCHER
-from caged.shared import zones
+from caged.shared import protocols, zones
 from caged.shared.policy import POLICY_ENV, APP_USER
 
 EMPTY_PROXY_ENV = [item for key in (
@@ -214,7 +214,7 @@ class Session:
             return unavailable(f'WSL networking is {networking or "unknown"}: WSL reaches the Windows dialer only with '
                                'networkingMode=mirrored (set it in %UserProfile%\\.wslconfig, then wsl --shutdown), '
                                'or with Docker Desktop.')
-        route, revision = dialer.register(self.args.instance, addresses, node['port'], node.get('sni') or server)
+        route, revision = dialer.register(self.args.instance, addresses, node['port'], protocols.tls_name(node) or server)
         self.dialer_registered = True
         check = dialer.wait_check(self.args.instance, revision)
         if path_kind == 'relay':
@@ -250,7 +250,7 @@ class Session:
         if kind == 'direct':
             return node, addresses, []
         # The node protocol and its TLS stay end to end; only the TCP hop moves to the host.
-        node = {**node, 'sni': node.get('sni') or server}
+        node = protocols.keep_name(node, server)
         if dialer.uses_socket(kind):
             folder = dialer.socket_dir(self.args.instance)
             # The gateway forwards 127.0.0.1:<port> to the mounted socket and fills in the port.

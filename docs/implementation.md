@@ -36,7 +36,7 @@ flowchart TB
         Core --> Eth
     end
     Port --> Chromium
-    Eth -->|"到固定节点 IP 与端口的 TCP 连接"| Node["配置选择的 AnyTLS 节点"]
+    Eth -->|"到固定节点 IP 与端口的 TCP 连接"| Node["配置选择的节点"]
     Node --> Internet["目标网站 / DoH 解析服务"]
 ```
 
@@ -77,7 +77,7 @@ browser 与 claude 的应用用户名固定为 `claude-user`。UID/GID 默认值
 `./cage up` 按依赖顺序启动三个容器：
 
 1. 检查实例名称和本地端口是否可用。
-2. 从 `proxy.file_path` 指定的节点文件（默认应用 YAML 同目录的 `mihomo.yaml`）读取 `proxy.node`，检查是否为当前支持的独立 AnyTLS 节点。
+2. 从 `proxy.file_path` 指定的节点文件（默认应用 YAML 同目录的 `mihomo.yaml`）读取 `proxy.node`，检查是否为当前支持的独立节点（TCP 上的 TLS）。
 3. 将节点服务器域名解析并固定为真实公网 IPv4，同时保留 SNI。
 4. 按项目源码哈希检查镜像，必要时构建。
 5. 后台启动网络容器，通过 `docker exec -i` 的标准输入将节点参数写入其私有 tmpfs 中的启动文件；网关读完后删除该文件。
@@ -112,20 +112,20 @@ config/mihomo.yaml   # 默认的节点文件，可通过 proxy.file_path 更换
 mode: global
 proxies:
   - name: CAGED_NODE
-    # 其余字段来自选定的独立 AnyTLS 节点
+    # 其余字段来自选定的独立节点（AnyTLS、Trojan、VLESS、VMess，见 configuration.md）
 proxy-groups: []
 rules: []
 ```
 
 启动后还会通过 mihomo 控制接口确认 `GLOBAL` 选择的是 `CAGED_NODE`。因此，项目快照中保留的原始规则、策略组选择和运行模式不会直接成为容器策略。更换节点通过 `--node` 完成；修改项目配置快照后需要重启容器读取，不做实时同步。
 
-当前只支持独立 AnyTLS 节点。带有 `dialer-proxy` 的链式节点会被拒绝，避免只复制末端节点却遗漏前置链路。节点的 SNI、TLS 校验等参数沿用源配置，程序不自动改写其校验强度。
+支持 TCP 上 TLS 的独立节点：AnyTLS、Trojan、VLESS、VMess（后两者需 `tls: true`，含 Reality），协议表在 `caged/shared/protocols.py`，启动器和网关共用。带有 `dialer-proxy` 的链式节点会被拒绝，避免只复制末端节点却遗漏前置链路。节点的 SNI、TLS 校验等参数沿用源配置，程序不自动改写其校验强度；只在 `server` 被换成固定 IP 时，为空的 TLS 名称字段（`sni` 或 `servername`）和 `ws` 的 `Host` 头补上原域名。
 
 ## 5. 网站流量如何到达代理
 
 Chromium 发起网站连接后，容器内路由将相应流量送入 `caged0`。mihomo 使用 gVisor 协议栈处理这些 TCP/UDP 流量，再按全局配置交给指定节点。
 
-mihomo 自身使用 `eth0` 连接已固定的节点 IP，避免代理连接再次进入 TUN 形成循环。AnyTLS 节点支持的 UDP 也由代理转发；本项目保留 UDP 能力，并通过 STUN 检测其实际出口。IPv6 外网流量则阻断。
+mihomo 自身使用 `eth0` 连接已固定的节点 IP，避免代理连接再次进入 TUN 形成循环。节点支持的 UDP 也由代理转发；本项目保留 UDP 能力，并通过 STUN 检测其实际出口。IPv6 外网流量则阻断。
 
 浏览器和网关的常见代理环境变量都被清空，包括大小写形式的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY`。浏览器不依赖应用是否遵守这些环境变量，主要约束来自共享网络中的 TUN 与防火墙。
 
@@ -204,7 +204,7 @@ IPv6 的输入、转发、输出也默认拒绝，仅允许回环。IPv4 输入�
 
 当 mihomo 停止或 TUN 消失时，应用即使尝试从 `eth0` 直连普通网站，也无法绕过独立防火墙。浏览器等进程仍持有网络命名空间时，内核中的防火墙不会随网关容器退出而自动消失。这也是故障测试保留检查容器的原因。
 
-物理出口同时限制接口、节点 IP、端口和 mihomo 的 socket mark。browser 与 claude 没有 `NET_ADMIN` 并移除 `NET_RAW`，不能伪造这个标记或网关探针标记。AnyTLS 握手仍由 mihomo 实现。
+物理出口同时限制接口、节点 IP、端口和 mihomo 的 socket mark。browser 与 claude 没有 `NET_ADMIN` 并移除 `NET_RAW`，不能伪造这个标记或网关探针标记。节点协议的握手仍由 mihomo 实现。
 
 ### 7.1 内核许可、监控与恢复
 
