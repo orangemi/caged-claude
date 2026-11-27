@@ -13,6 +13,7 @@ import threading
 import time
 import argparse
 from zoneinfo import ZoneInfo
+from caged.shared import protocols
 from caged.shared.policy import POLICY_ENV, policy
 from .lease import PROBE_MARK, initialize
 from .mihomo import NODE, TUN, api, make_config
@@ -111,7 +112,7 @@ def main():
         addresses = [str(ipaddress.IPv4Address(value)) for value in payload.get('addresses') or [proxy['server']]]
         if not 1 <= len(addresses) <= 4 or proxy['server'] not in addresses:
             raise RuntimeError('Invalid pinned node addresses')
-    if proxy.get('type') != 'anytls':
+    if protocols.problem(proxy):
         raise RuntimeError('Unsupported node transport')
     # Establish the deny policy before starting anything that can access the network.
     initialize()

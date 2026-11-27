@@ -116,6 +116,20 @@ class NodePath(DialerTest):
                                                   ['203.0.113.1'], 'node.example'),
                          ({**NODE, 'server': '0.250.250.254', 'port': dialer.port('one')}, ['0.250.250.254'], []))
 
+    def test_vless_through_the_dialer_keeps_its_tls_name_in_servername(self):
+        session, path, _ = self.choose('auto', {'1.1.1.1': 'utun4'}, self.ok)
+        vless = {'type': 'vless', 'tls': True, 'server': '203.0.113.1', 'port': 443}
+        node, _, _ = Session.gateway_endpoint(SimpleNamespace(args=session.args, node_path=path), vless,
+                                              ['203.0.113.1'], 'node.example')
+        self.assertEqual((node['server'], node['servername']), ('0.250.250.254', 'node.example'))
+        self.assertNotIn('sni', node)
+        reality = {**vless, 'servername': 'cover.example'}
+        node, _, _ = Session.gateway_endpoint(SimpleNamespace(args=session.args, node_path=path), reality,
+                                              ['203.0.113.1'], 'node.example')
+        self.assertEqual(node['servername'], 'cover.example')
+        route = json.loads((self.folder / 'routes.json').read_text())['instances']['one']
+        self.assertEqual(route['sni'], 'node.example')  # NODE (anytls) registered with its sni
+
     def test_linux_dialer_endpoint_is_a_mounted_socket(self):
         _, path, _ = self.choose('dialer', check=self.ok, system='Linux')
         self.assertEqual((path['kind'], path['socket']), ('unix', '/run/caged-dialer/dialer.sock'))

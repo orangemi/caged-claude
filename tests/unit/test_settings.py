@@ -276,11 +276,11 @@ class Settings(unittest.TestCase):
                          '  - {name: vmess-node, type: vmess}\n'
                          '  - {name: chained, type: anytls, dialer-proxy: other}\n')
         self.assertEqual(proxy.load_node(nodes), [
-            {'name': 'alias-node', 'type': 'anytls', 'udp': True},
-            {'name': 'vmess-node', 'type': 'vmess', 'udp': None},
-            {'name': 'chained', 'type': 'anytls', 'udp': None}])
+            {'name': 'alias-node', 'type': 'anytls', 'udp': True, 'unsupported': None},
+            {'name': 'vmess-node', 'type': 'vmess', 'udp': None, 'unsupported': 'no TLS'},
+            {'name': 'chained', 'type': 'anytls', 'udp': None, 'unsupported': 'chained node'}])
         self.assertEqual(proxy.load_node(nodes, 'alias-node')['server'], '203.0.113.5')
-        for name, message in (('missing', 'not found'), ('vmess-node', 'AnyTLS'), ('chained', 'chained')):
+        for name, message in (('missing', 'not found'), ('vmess-node', 'does not use TLS'), ('chained', 'chained')):
             with self.assertRaisesRegex(engine.CageError, message):
                 proxy.load_node(nodes, name)
         nodes.write_text('proxies: [unclosed\n')

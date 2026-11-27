@@ -5,11 +5,11 @@ Caged Claude 由三个容器组成，外加宿主上的一个可选组件：
 ```text
 宿主机
 ├── ./cage（POSIX sh）─▶ launcher 容器（Python 启动器，驱动宿主 Docker）
-├── 宿主拨号器（Go，宿主开着 TUN/VPN 时使用）──绑定物理网卡──▶ 选定的 AnyTLS 节点
+├── 宿主拨号器（Go，宿主开着 TUN/VPN 时使用）──绑定物理网卡──▶ 选定的节点
 ├── 宿主桥监听进程（python3 + 按需 sshd -i，可选）◀───────────────┐
 │                                                                   │ host.sock（Mac 上为回环 TCP）
 Docker                                                              │
-├── network：mihomo TUN + DNS + 默认拒绝防火墙 + 持续检查 ──▶ 选定的 AnyTLS 节点 ──▶ Internet
+├── network：mihomo TUN + DNS + 默认拒绝防火墙 + 持续检查 ──▶ 选定的节点 ──▶ Internet
 ├── claude：Debian 13 + Claude Code，共享 network 的网络命名空间 ───┘
 └── browser：Chromium，共享 network 的网络命名空间，UI 发布到 127.0.0.1:3002
 ```
@@ -29,9 +29,9 @@ Docker                                                              │
 
 ## 宿主 TUN 与拨号器
 
-容器的出站连接最终由宿主发起，并按宿主的路由表转发。Clash Verge、mihomo、sing-box 等的 TUN 模式会装上比默认路由更具体的路由，把这些连接截走，再按它自己的规则转发；在用户的规则下，到节点的 AnyTLS 会话常常因此建立失败（实测：经 TUN 握手 5 秒后被断开，绑定物理网卡 0.37 秒完成）。这不会造成泄漏（出口检查仍要求出口是选定节点），但会让网络不通。
+容器的出站连接最终由宿主发起，并按宿主的路由表转发。Clash Verge、mihomo、sing-box 等的 TUN 模式会装上比默认路由更具体的路由，把这些连接截走，再按它自己的规则转发；在用户的规则下，到节点的会话（如 AnyTLS）常常因此建立失败（实测：经 TUN 握手 5 秒后被断开，绑定物理网卡 0.37 秒完成）。这不会造成泄漏（出口检查仍要求出口是选定节点），但会让网络不通。
 
-宿主拨号器解决这一跳：一个只用标准库写的 Go 小程序（`dialer/`），由 `./cage` 在首次需要时用 Docker 编译并在宿主上启动。它只把 TCP 字节转发到启动器写入 `state/.dialer/routes.json` 的固定节点地址，出站连接绑定物理网卡（macOS `IP_BOUND_IF`、Linux `SO_BINDTODEVICE`、Windows `IP_UNICAST_IF`），绕开按路由劫持的 TUN；选不到物理网卡时拒绝连接，绝不改用未绑定的连接。AnyTLS 及其 TLS 仍在网关的 mihomo 与节点之间端到端完成，拨号器看不到内容。
+宿主拨号器解决这一跳：一个只用标准库写的 Go 小程序（`dialer/`），由 `./cage` 在首次需要时用 Docker 编译并在宿主上启动。它只把 TCP 字节转发到启动器写入 `state/.dialer/routes.json` 的固定节点地址，出站连接绑定物理网卡（macOS `IP_BOUND_IF`、Linux `SO_BINDTODEVICE`、Windows `IP_UNICAST_IF`），绕开按路由劫持的 TUN；选不到物理网卡时拒绝连接，绝不改用未绑定的连接。节点协议及其 TLS 仍在网关的 mihomo 与节点之间端到端完成，拨号器看不到内容。
 
 ```text
 网关 mihomo ──TCP──▶ 宿主拨号器 ──绑定 en0 等物理网卡──▶ 节点
@@ -50,7 +50,7 @@ Docker                                                              │
 - DNS 指向网络容器的 `127.0.0.1:53`，`proxy.dns_upstream` 显式经选定代理节点访问。Chromium 受管策略设为 `DnsOverHttpsMode=off`、`BuiltInDnsClientEnabled=false`，交给系统解析器，再由 mihomo 完成 DoH。公共 UDP/TCP 53 和 853 在进入 TUN 前拒绝，不作为备用解析器。启动时同时检测本地 UDP/TCP 查询、需要真实上游响应的新鲜 TXT 查询和公共 DNS 绕过。
 - 节点服务器先固定为真实 IPv4，保留原配置的 SNI，避免代理自身解析产生引导循环。节点域名先用节点文件的 `dns.proxy-server-nameserver`，再用 `proxy.bootstrap_dns` 解析，全部校验 HTTPS 证书；最多固定 4 个地址，防火墙逐个放行，mihomo 在其间故障切换。浏览器域名经网关和所选节点查询。网页自己发起的 HTTPS/DoH 请求仍受全局代理约束，但不会被内容识别后强制改写成指定 DNS 服务。
 - 新发起的私网、链路本地元数据和 Docker 网桥宿主管理连接在进入 TUN 前拒绝；浏览器 UI 已建立连接的回包允许返回。
-- IPv6 外网流量直接阻断。AnyTLS 支持的 UDP 经代理转发；无法代理的流量不回退直连。
+- IPv6 外网流量直接阻断。节点支持的 UDP 经代理转发；无法代理的流量不回退直连。
 - mihomo 的控制接口与 Chromium DevTools 仅监听共享网络空间的回环地址，不发布给宿主或局域网。mihomo 控制接口另有每次运行随机生成的鉴权密钥。
 
 ## 持续检查与暂停恢复
