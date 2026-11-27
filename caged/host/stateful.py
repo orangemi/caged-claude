@@ -24,7 +24,7 @@ import shutil
 import tempfile
 import time
 import uuid
-from . import docker as engine, images
+from . import docker as engine, images, ui
 from .errors import CageError
 from .paths import ROOT, LABEL
 
@@ -277,7 +277,7 @@ mv /state/{MARKER}.tmp /state/{MARKER}'''
 
     def _seed(self, image):
         marker = self._new_marker(image)
-        print(f'Creating the persistent environment in {self.root} (first start only)...', flush=True)
+        ui.info('Environment', f'creating it in {ui.short(self.root, ROOT)} (first start only, a few minutes)')
         self._run(self._seed_script(), image, SEED=marker['id'], MARKER=json.dumps(marker),
                   OWNER=f'{os.getuid()}:{os.getgid()}')
         self._register(marker['id'])
@@ -432,7 +432,7 @@ echo "$1"''', disk=disk, UUID=filesystem)
         so an interruption leaves nothing but disk.img.tmp to clean up."""
         filesystem = str(uuid.uuid4())
         marker = self._new_marker(image, filesystem=filesystem)
-        print(f'Creating the persistent environment in {self.disk} (first start only)...', flush=True)
+        ui.info('Environment', f'creating it in {ui.short(self.disk, ROOT)} (first start only, a few minutes)')
         temporary = self.root / (DISK + '.tmp')
         self._helper('''rm -f "$DISK"
 truncate -s "$SIZE" "$DISK"
@@ -496,6 +496,6 @@ def adopt_legacy_credentials(args):
             legacy.append(ROOT / 'config' / '.claude')
         for source in legacy:
             if adopt_legacy_directory(source, target):
-                print(f'Migrated Claude state from {source} to {target}.', flush=True)
+                ui.info('Claude state', f'moved from {source} to {target}')
                 break
     target.mkdir(parents=True, exist_ok=True, mode=0o700)

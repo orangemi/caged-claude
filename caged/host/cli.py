@@ -4,7 +4,7 @@ import os
 import signal
 import subprocess
 import sys
-from . import dialer, docker as engine, hostbridge, images, proxy, stateful
+from . import dialer, docker as engine, hostbridge, images, proxy, stateful, ui
 from .config import ConfigError, resolve
 from .errors import CageError
 from .instance import Instance
@@ -20,34 +20,53 @@ def warn_legacy():
     """Point at containers this project started under its old caged-browser name."""
     result = engine.docker('ps', '-aq', '--filter', f'label={LEGACY_LABEL}={ROOT}', check=False)
     if result.returncode == 0 and result.stdout.split():
-        print('Notice: containers from the old caged-browser layout are still present and may hold the UI port. '
-              'Remove them with: docker rm -f ' + ' '.join(result.stdout.split()), file=sys.stderr)
+        ui.warn('Old layout', 'containers from the old caged-browser layout are still present and may hold the UI '
+                'port; remove them with: docker rm -f ' + ' '.join(result.stdout.split()))
+
+
+PERMIT_MARKS = {'open': 'ok', 'checking': 'warn', 'paused': 'warn', 'closed': 'fail', 'blocked': 'fail'}
 
 
 def show_status(instance, args=None):
     gateway = engine.inspect(instance.network)
     network_up = bool(gateway and gateway['State']['Running'])
-    for name in instance.names:
-        current = engine.inspect(name)
-        if name == instance.check and current is None:
+    report = {'instance': instance.name, 'containers': {}}
+    containers = []
+    for role in ('network', 'browser', 'claude', 'check'):
+        current = engine.inspect(getattr(instance, role))
+        if role == 'check' and current is None:
             continue
         state = current['State']['Status'] if current else 'absent'
-        if name in (instance.browser, instance.claude) and current and current['State']['Running']:
+        if role in ('browser', 'claude') and current and current['State']['Running']:
             if not network_up or current['HostConfig']['NetworkMode'] != 'container:' + gateway['Id']:
-                state += ' (gateway unavailable; outbound blocked)'
-        print(name + ': ' + state)
+                state += ' without its gateway (outbound blocked)'
+        report['containers'][role] = state
+        containers.append(f'{role} {state}')
+    rows = [('ok' if all(state == 'running' for state in report['containers'].values()) else 'warn',
+             'Containers', ' · '.join(containers))]
     if network_up and gateway['Config'].get('Labels', {}).get(LABEL) == str(ROOT):
         result = engine.docker(*gate_command(gateway, 'status'), check=False)
         if result.returncode == 0:
-            observed = json.loads(result.stdout)
-            print('network permit: ' + observed['state'] + '; remaining=' + str(observed['lease_remaining']) + 's; ' + observed['reason'])
+            permit = report['permit'] = json.loads(result.stdout)
+            reason = permit['reason'][:1].lower() + permit['reason'][1:]
+            rows.append((PERMIT_MARKS.get(permit['state'], 'warn'), 'Outbound',
+                         f'{permit["state"]} · {reason} (permit expires in {permit["lease_remaining"]} s unless a check renews it)'
+                         if permit['state'] == 'open' else f'{permit["state"]} · {reason}'))
         if args is not None:
-            print('node address: ' + pinned_status(gateway, args))
+            node = report['node_address'] = pinned_status(gateway, args)
+            rows.append(('ok' if 'still current' in node or 'fixed in the node file' in node else 'warn', 'Node', node))
     if args is not None:
         state = stateful.open_state(args)
-        print('environment: ' + state.describe())
-        print('host bridge: ' + hostbridge.status(args, state))
-        print('host dialer: ' + dialer.describe(instance.name))
+        report.update(environment=ui.short(state.describe(), ROOT), host_bridge=hostbridge.status(args, state),
+                      host_dialer=dialer.describe(instance.name))
+        rows += [('info', 'Environment', report['environment']), ('info', 'Host bridge', report['host_bridge']),
+                 ('info', 'Host dialer', report['host_dialer'])]
+    if ui.JSON:
+        ui.result(report)
+        return
+    ui.heading(f'Instance {instance.name}')
+    for kind, label, text in rows:
+        ui.step(kind, label, text, out=True)
 
 
 def pinned_status(gateway, args):
@@ -79,8 +98,13 @@ def pinned_status(gateway, args):
 def main(args):
     instance = Instance(args.instance)
     if args.action == 'nodes':
-        for node in proxy.load_node(args.proxy_file_path):
-            print(f'{node["name"]}\t{node["type"]}\tUDP={node.get("udp", False)}')
+        nodes = proxy.load_node(args.proxy_file_path)
+        if ui.JSON:
+            ui.result(nodes)
+            return
+        width = max((len(str(node['name'])) for node in nodes), default=0)
+        for node in nodes:
+            ui.line(f'{node["name"]!s:<{width}}  {node["type"]!s:<8}  {"UDP" if node.get("udp") else ""}'.rstrip())
         return
     if args.action == 'build':
         for role in images.IMAGES:
@@ -120,7 +144,7 @@ def main(args):
         current = engine.inspect(instance.network)
         if not current or not current['State']['Running'] or current['Config'].get('Labels', {}).get(LABEL) != str(ROOT):
             raise CageError('Managed network container is not running')
-        print(engine.docker(*gate_command(current, args.action)).stdout.strip())
+        ui.line(engine.docker(*gate_command(current, args.action)).stdout.strip())
         return
     if args.action == 'start':
         warn_legacy()
@@ -148,7 +172,8 @@ def main(args):
                 keep_running = True
                 # The listener runs on the host; ./cage starts it from this plan.
                 hostbridge.write_plan(args, session.state, 'start' if args.host_bridge else 'stop')
-                print(f'Started network, browser and Claude in daemon mode. Open {args.ui_scheme}://localhost:{args.port}; use ./cage claude to enter Claude, ./cage down to stop.', flush=True)
+                ui.line(f'\nStarted: {args.ui_scheme}://localhost:{args.port}')
+                ui.line('  Enter Claude: ./cage claude    Status: ./cage status    Stop: ./cage down')
     finally:
         if not keep_running:
             session.close()
@@ -168,10 +193,12 @@ def cli(argv=None):
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, handle_stop)
     try:
-        main(resolve(argv))
+        args = resolve(argv)
+        ui.JSON = args.json
+        main(args)
     except KeyboardInterrupt:
-        print('\nStopped; containers owned by this launcher have been cleaned up.')
+        ui.line('\nStopped; containers owned by this launcher have been cleaned up.')
     except (ConfigError, CageError, OSError, subprocess.TimeoutExpired) as error:
-        print(f'Error: {error}', file=sys.stderr)
+        ui.error(error)
         raise SystemExit(1)
 

@@ -258,7 +258,7 @@ def main(argv):
         plan = load(argv[1])
         if argv[0] == 'start':
             start(plan)
-            print(f'Host bridge listening on {plan.endpoint()}: ssh host (from ./cage shell) reaches {plan.user} on this machine.')
+            print(f'  ✓ Host bridge  ssh host (from ./cage shell) reaches {plan.user} on this machine ({plan.endpoint()})')
         else:
             stop(plan)
         return 0

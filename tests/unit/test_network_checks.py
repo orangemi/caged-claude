@@ -171,9 +171,9 @@ class LiveDrill(unittest.TestCase):
     def test_leak_fails_and_missing_evidence_is_unknown(self):
         with self.assertRaisesRegex(audit.Failed, 'https_literal_ip'):
             self.drill(self.ok, {**self.closed, 'https_literal_ip': True})
-        with self.assertRaisesRegex(audit.Unknown, '正向对照'):
+        with self.assertRaisesRegex(audit.Unknown, 'positive control'):
             self.drill(self.closed, self.closed)
-        with self.assertRaisesRegex(audit.Unknown, '内核拒绝计数'):
+        with self.assertRaisesRegex(audit.Unknown, 'kernel drop count'):
             self.drill(self.ok, self.closed, growth=0)
 
     def test_probe_parts_map_to_states(self):
