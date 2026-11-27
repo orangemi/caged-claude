@@ -107,6 +107,7 @@ class Session:
         egress = self.check_egress()
         source = self.settle_timezone(egress)
         ui.ok('Gateway', f'exit {egress["ip"]} ({egress["country"]}) · DNS through the node · IPv6 blocked')
+        self.show_reference(egress['ip'])
         ui.ok('Timezone', f'{self.policy["timezone"]} ({source})')
         self.hint_locale(egress['country'])
 
@@ -118,6 +119,36 @@ class Session:
         else:
             usual = ', '.join(zones.locales(country)[:3]) or 'none known'
             ui.info('Locale', f'{locale}; locales of {country}: {usual} (set locale in app.yaml to use one)')
+
+    def show_reference(self, measured):
+        """Two more services' view of the exit, for reference only: it never stops a start."""
+        try:
+            result = self.exec_probe(self.network_container_id, 'caged.runtime.checks.network', 'reference',
+                                     timeout=20, check=False)
+            services = json.loads(result.stdout)
+        except (subprocess.TimeoutExpired, ValueError):
+            services = None
+        if not isinstance(services, dict) or 'error' in services:
+            ui.info('Exit check', 'reference services did not answer')
+            return
+        seen, details = [], []
+        for name, value in services.items():
+            if 'error' in value:
+                details.append((name, value['error']))
+                continue
+            flags = [value['country'] or '?'] + ([value['network']] if value.get('network') else [])
+            if 'proxy' in value:
+                flags.append('flagged as a proxy' if value['proxy'] else 'not flagged as a proxy')
+            details.append((name, f'{value["ip"]} ({", ".join(flags)})'))
+            seen.append(value['ip'])
+        other = sorted(set(seen) - {measured})
+        if other:
+            ui.warn('Exit check', f'reference services see {", ".join(other)}, not the measured exit {measured}: '
+                                  'the node sends some destinations out through another address', details)
+        elif seen:
+            ui.ok('Exit check', f'{len(seen)} reference services see {measured} too', details)
+        else:
+            ui.info('Exit check', 'reference services did not answer', details)
 
     def settle_timezone(self, egress):
         """The set timezone must lie in the exit country; unset, it follows the exit.

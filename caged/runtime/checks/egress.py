@@ -29,6 +29,16 @@ LOCATION_SOURCES = [
     ('geojs', 'https://get.geojs.io/v1/ip/geo/{ip}.json', False),
     ('ipapi.co', 'https://ipapi.co/{ip}/json/', False),
 ]
+# Shown at start for reference only, never a pass or fail: more services, each
+# reporting the address it sees. A node that sends different destinations out
+# through different addresses shows up here; Cloudflare is asked both at the
+# literal 1.1.1.1 the browser check uses and at an ordinary hostname.
+REFERENCE_SOURCES = [
+    ('ipinfo.io', 'https://ipinfo.io/json'),
+    ('ip2location.io', 'https://api.ip2location.io/'),
+    ('Cloudflare 1.1.1.1', 'https://1.1.1.1/cdn-cgi/trace'),
+    ('Cloudflare www', 'https://www.cloudflare.com/cdn-cgi/trace'),
+]
 # Only distinguishes "node unreachable" from "node blocks the IP services".
 REACHABILITY = 'https://www.gstatic.com/generate_204'
 STAGGER = 1.0
@@ -157,6 +167,51 @@ def locate(address, fetch, sources=LOCATION_SOURCES):
         remember(address, country, timezone, name)
         return country, timezone, name, failures
     return None, None, None, failures
+
+
+def reference(fetch, sources=REFERENCE_SOURCES):
+    """{service: {ip, country, network[, proxy]} or {error}}; never raises."""
+    def ask(name, url):
+        status, body = fetch(url, REQUEST_TIMEOUT)
+        if status != 200:
+            raise RuntimeError(f'HTTP {status}')
+        if url.endswith('/cdn-cgi/trace'):
+            # key=value lines; colo is the Cloudflare data centre that answered.
+            fields = dict(line.split('=', 1) for line in body.splitlines() if '=' in line)
+            address = public_ipv4(fields.get('ip', ''))
+            if not address:
+                raise RuntimeError('no public IPv4 in the response')
+            return {'ip': address, 'country': fields.get('loc', '').upper()[:2] or None,
+                    'network': f'Cloudflare {fields["colo"]}' if fields.get('colo') else None}
+        try:
+            value = json.loads(body)
+        except ValueError:
+            value = None
+        if not isinstance(value, dict):
+            raise RuntimeError('invalid response')
+        address = public_ipv4(str(value.get('ip', '')))
+        if not address:
+            raise RuntimeError('no public IPv4 in the response')
+        if name == 'ipinfo.io':
+            country, network = value.get('country'), value.get('org')
+        else:
+            country, network = value.get('country_code'), ' '.join(
+                part for part in (f'AS{value["asn"]}' if value.get('asn') else '', value.get('as') or '') if part)
+        result = {'ip': address, 'country': str(country or '').upper()[:2] or None,
+                  'network': str(network)[:80] if network else None}
+        if isinstance(value.get('is_proxy'), bool):
+            result['proxy'] = value['is_proxy']
+        return result
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=len(sources)) as pool:
+        futures = {name: pool.submit(ask, name, url) for name, url in sources}
+        for name, future in futures.items():
+            try:
+                results[name] = future.result()
+            except Exception as error:
+                results[name] = {'error': describe(error)}
+    return results
 
 
 def summary(failures):
