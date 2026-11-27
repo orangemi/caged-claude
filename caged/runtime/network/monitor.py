@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from datetime import datetime
 
 from caged.runtime.network import lease as gate
+from caged.shared import zones
 from caged.shared.protocol import encoded, digest
 from caged.shared.policy import policy, PolicyViolation, APP_USER, BROWSER_DNS_POLICIES
 
@@ -66,6 +67,10 @@ def check(stage):
     if stage == 'full':
         from caged.runtime.checks.network import dns_checks, trace
         result.update(dns=dns_checks(), exit=trace())
+        # The timezone was settled against the exit at start; a moved exit breaks it.
+        if zones.country_of(options['timezone']) != result['exit']['country']:
+            raise PolicyViolation(f'Exit moved to {result["exit"]["country"]}; '
+                                  f'timezone {options["timezone"]} no longer matches it')
     return result
 
 

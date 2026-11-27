@@ -29,7 +29,7 @@ config/mihomo.yaml   # mihomo 节点和凭证
 
 所有启动选项按 **命令行参数 > 环境变量 > `app.yaml` > 内置默认值** 解析，并且只校验最终生效的值。`--help` 列出完整选项。`config.example/app.yaml` 仅启用必选配置，可选项统一注释并注明默认值；需要覆盖默认值时取消对应注释。无默认值的选项缺失、键名拼错或生效的时区/端口非法时，会在启动容器前报错。
 
-可省略的默认项包括节点文件 `mihomo.yaml`、实例名 `caged-claude`、节点引导 DNS（`https://1.1.1.1/dns-query` 与 `https://223.5.5.5/dns-query`）、运行时 DoH 上游 `https://1.1.1.1/dns-query`、宿主 TUN 检查 `warn`、locale `en_US.UTF-8`、语言 `en-US`、跟随启动者的 UID/主 GID、共享内存 `1g`，以及整个 `ports` 块。节点、期望国家和时区仍由配置或覆盖项明确提供。
+可省略的默认项包括节点文件 `mihomo.yaml`、实例名 `caged-claude`、节点引导 DNS（`https://1.1.1.1/dns-query` 与 `https://223.5.5.5/dns-query`）、运行时 DoH 上游 `https://1.1.1.1/dns-query`、宿主 TUN 检查 `warn`、locale `en_US.UTF-8`、语言 `en-US`、跟随启动者的 UID/主 GID、共享内存 `1g`，以及整个 `ports` 块。节点和期望国家仍由配置或覆盖项明确提供；时区省略时跟随节点（见下文）。
 
 | `app.yaml` 键 | 环境变量 | 命令行参数 |
 | --- | --- | --- |
@@ -63,13 +63,27 @@ config/mihomo.yaml   # mihomo 节点和凭证
 | `monitor.lease` / `monitor.probe_timeout` | `CAGED_CLAUDE_MONITOR_LEASE` / `CAGED_CLAUDE_MONITOR_PROBE_TIMEOUT` | `--monitor-lease` / `--monitor-probe-timeout` |
 | `monitor.retry_initial` / `monitor.retry_max` | `CAGED_CLAUDE_MONITOR_RETRY_INITIAL` / `CAGED_CLAUDE_MONITOR_RETRY_MAX` | `--monitor-retry-initial` / `--monitor-retry-max` |
 
-例如，用环境变量改变时区，并用命令行覆盖环境变量中的端口：
+例如，用环境变量固定时区，并用命令行覆盖环境变量中的端口：
 
 ```bash
 CAGED_CLAUDE_TIMEZONE=Asia/Tokyo CAGED_CLAUDE_PORT=3102 ./cage up --port 3103
 ```
 
-切换地区时同时指定节点和期望国家，例如 `--node '🇯🇵 Japan 01' --expected-country JP`。将 `proxy.expected_country` 设为 YAML `null` 或 `any`（命令行/环境变量使用 `any`）可以取消国家限制，仍检查连通性及审计中的出口一致性。
+### 时区
+
+`browser.timezone` 可省略（或写 `auto`）。网关测得出口 IP 后，启动器按出口所在地选择时区：
+
+- 定位服务给出的时区属于出口国家时用它，例如美国出口可能是 `America/Chicago`；
+- 否则用该国的默认时区：通常是 tzdata `zone.tab` 中的第一个，澳大利亚、巴西、加拿大、俄罗斯、乌克兰、乌兹别克斯坦改用人口最多的时区（如 `Australia/Sydney`、`America/Toronto`）。
+
+填写时必须是某个国家的时区（`UTC`、`Etc/GMT+5` 这类不属于任何国家，直接报错），并且：
+
+- 设置了 `proxy.expected_country` 时，启动容器前就检查时区属于该国家（只在启动时检查，`./cage nodes`、`status`、`down` 不受影响）；
+- 网关测得出口后，时区不属于出口国家则拒绝启动，并提示该国可用的时区。
+
+选定的时区同时写入两个容器的 `TZ`、`/etc/timezone` 和 `/etc/localtime`，因此浏览器的 `Intl` 和 shell 里的 `date` 一致。网关在收到这个时区之前不启动监控，也就不放行任何出站流量。运行中复检出口时，如果出口换到别的国家，监控判定违规并断网；`./cage status` 显示当前时区，审计的“出口符合已保存规则”一项也会核对它。附加到已运行实例的命令（`./cage claude`、审计等）沿用该实例的时区；显式指定不同的时区会报错，需要先 `./cage down`。
+
+切换地区时同时指定节点和期望国家，例如 `--node '🇯🇵 Japan 01' --expected-country JP`；没有固定时区时，时区随之变成 `Asia/Tokyo`。将 `proxy.expected_country` 设为 YAML `null` 或 `any`（命令行/环境变量使用 `any`）可以取消国家限制，仍检查连通性及审计中的出口一致性。
 
 `browser.language` 使用 `ja-JP` 等语言标签，自动生成 `ja-JP,ja` 偏好；`browser.locale` 控制系统 locale。两个应用的用户名固定为 `claude-user`；Claude 的 HOME 是 `/home/claude`，浏览器的是 `/config`。`puid`、`pgid` 默认都是 `host`，每次启动读取当前进程的 UID/主 GID；通常等同于运行终端的 `id -u` 和 `id -g`。可显式填写整数；环境变量和 CLI 仍按优先级分别覆盖。使用普通用户执行 `./cage up` 即可，使用 sudo 启动会读到 root 身份。时区文件在容器启动时设置，不再烘焙进镜像。
 

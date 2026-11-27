@@ -87,7 +87,7 @@ init() {
 Next:
   1. Put your real nodes in config/mihomo.yaml (or: ./cage init --mihomo FILE)
   2. ./cage nodes            and copy an anytls node name
-  3. Edit config/app.yaml    proxy.node, proxy.expected_country, browser.timezone
+  3. Edit config/app.yaml    proxy.node, proxy.expected_country (the timezone follows the node)
   4. ./cage up
 EOF
 }

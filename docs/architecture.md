@@ -132,7 +132,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests/unit -t . -v
 | 代理故障关闭（Fail-closed） | 当前实例：专用 UID 失去代理路由后 HTTPS/UDP/公共 DNS 均失败且直连拒绝计数增加，正向对照先通过。一次性实例：删除网关后，检查容器、Claude 的 TCP/DNS/UDP 与浏览器新鲜字面 IP 导航均失败 |
 | UDP 出站约束（UDP egress） | 保留经节点转发 UDP 的设计，以实际 STUN 出口和物理接口默认拒绝策略验证；与 Claude-Cage 默认阻断 UDP 的策略不同 |
 | IPv6 出站约束（IPv6 egress） | 全局 IPv6 地址为 0；实际 IPv6 请求失败；存在 IPv6 默认路由时，IPv6 默认拒绝计数必须增加 |
-| 出口符合已保存规则（Exit policy） | 出口 IP 不在内置的中国大陆网段（APNIC 分配给 CN 的地址），定位国家不是 CN，并符合期望国家；终端、UDP、浏览器、Claude 容器四种出口 IP 一致；不是永久固定 IP 保证 |
+| 出口符合已保存规则（Exit policy） | 出口 IP 不在内置的中国大陆网段（APNIC 分配给 CN 的地址），定位国家不是 CN，并符合期望国家；时区属于出口国家；终端、UDP、浏览器、Claude 容器四种出口 IP 一致；不是永久固定 IP 保证 |
 
 本地隔离测试有可连通的 TCP、UDP、UDP/53、TCP/53 和 TCP/853 服务作正向对照，再验证网关运行与移除后均无法绕过。生命周期测试使用独立随机实例，可在日常浏览器运行时执行。
 

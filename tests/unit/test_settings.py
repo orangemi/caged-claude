@@ -11,7 +11,7 @@ import unittest
 from caged.host import docker as engine, proxy
 from caged.host.session import Session
 from caged.host.paths import ROOT, LABEL
-from caged.host.config import ConfigError, read_yaml, resolve, runtime_policy
+from caged.host.config import ConfigError, read_yaml, resolve, runtime_policy, start_timezone
 from caged.shared.policy import POLICY_ENV, check_country
 from unittest.mock import patch
 
@@ -24,6 +24,7 @@ class Settings(unittest.TestCase):
         self.data = read_yaml(ROOT / 'config.example/app.yaml')
         self.data['proxy'].update(file_path='mihomo.yaml', node='European fixture', expected_country='DE',
                                   dns_upstream='https://9.9.9.9/dns-query')
+        self.data['browser'] = self.data.get('browser') or {}  # every example key is commented out
         self.data['browser'].update(timezone='Europe/Berlin', locale='de_DE.UTF-8', language='de-DE',
                                     puid='host', pgid='host', shm_size='1g')
         self.data['ports'] = {'ui': 4321, 'controller': 19090, 'mixed': 19890, 'debug': 19222}
@@ -123,12 +124,12 @@ class Settings(unittest.TestCase):
 
     def test_cli_overrides_environment_which_overrides_file(self):
         env = {'CAGED_CLAUDE_NODE': 'environment node', 'CAGED_CLAUDE_PORT': '5432',
-               'CAGED_CLAUDE_TIMEZONE': 'America/New_York', 'CAGED_CLAUDE_LANGUAGE': 'fr-CA'}
+               'CAGED_CLAUDE_TIMEZONE': 'Europe/Busingen', 'CAGED_CLAUDE_LANGUAGE': 'fr-CA'}
         args = self.parse(env=env)
         self.assertEqual((args.node, args.port, args.timezone, args.languages),
-                         ('environment node', 5432, 'America/New_York', ['fr-CA', 'fr']))
-        args = self.parse('--node', 'CLI node', '--port', '6543', '--timezone', 'UTC', env=env)
-        self.assertEqual((args.node, args.port, args.timezone), ('CLI node', 6543, 'UTC'))
+                         ('environment node', 5432, 'Europe/Busingen', ['fr-CA', 'fr']))
+        args = self.parse('--node', 'CLI node', '--port', '6543', '--timezone', 'auto', env=env)
+        self.assertEqual((args.node, args.port, args.timezone), ('CLI node', 6543, None))
 
     def test_overridden_invalid_lower_priority_values_do_not_fail(self):
         self.data['ports']['ui'] = 'invalid configuration value'
@@ -194,7 +195,26 @@ class Settings(unittest.TestCase):
             self.write()
             self.assertIsNone(self.parse().expected_country)
         self.assertIsNone(self.parse('--expected-country', 'any').expected_country)
-        self.assertEqual(self.parse('--expected-country', 'jp').expected_country, 'JP')
+        self.assertEqual(self.parse('--expected-country', 'jp', '--timezone', 'Asia/Tokyo').expected_country, 'JP')
+
+    def test_timezone_follows_the_node_unless_set_and_must_name_a_country(self):
+        for value in (None, '', 'auto', 'AUTO'):
+            self.data['browser']['timezone'] = value
+            self.write()
+            self.assertIsNone(self.parse().timezone)
+        del self.data['browser']['timezone']
+        self.write()
+        self.assertIsNone(self.parse().timezone)
+        # Set: a zone of the expected country, and of some country at all; checked when starting,
+        # so commands such as ./cage down still work after an edit.
+        args = self.parse('--timezone', 'Asia/Tokyo')
+        with self.assertRaisesRegex(ConfigError, 'Asia/Tokyo is in JP, but proxy.expected_country is DE.*Europe/Berlin'):
+            start_timezone(args)
+        for value in ('UTC', 'Etc/GMT+5'):
+            with self.subTest(value=value), self.assertRaisesRegex(ConfigError, 'belongs to no country'):
+                start_timezone(self.parse('--timezone', value, '--expected-country', 'any'))
+        start_timezone(self.parse('--timezone', 'Asia/Tokyo', '--expected-country', 'any'))
+        start_timezone(self.parse('--timezone', 'auto'))
 
     def test_runtime_country_gate_accepts_configured_regions_or_any(self):
         check_country('DE', 'DE')

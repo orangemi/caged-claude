@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from . import docker as engine, stateful, ui
 from .errors import CageError
 from .paths import ROOT
+from caged.shared import zones
 from caged.shared.policy import check_country, PolicyViolation
 
 
@@ -35,7 +36,7 @@ REMEDIES = {
     'fail_closed': 'run the check again; if it keeps failing, ./cage down && ./cage up',
     'udp_policy': 'make sure the node allows UDP; without UDP the STUN probe fails',
     'ipv6_policy': 'run ./cage down && ./cage up to rebuild the gateway',
-    'exit_consistency': 'choose a node outside mainland China that matches proxy.expected_country',
+    'exit_consistency': 'choose a node outside mainland China that matches proxy.expected_country and browser.timezone',
 }
 DRILL_UID = 65533
 DRILL_RULE = ['uidrange', f'{DRILL_UID}-{DRILL_UID}', 'lookup', 'main', 'priority', '100']
@@ -324,10 +325,13 @@ def run_audit(session, live=False):
             app = need(claude, claude_error, 'Claude exit')
             for country, address in ((tcp['country'], tcp['ip']), (seen['country'], seen['ip'])):
                 check_country(country, options['expected_country'], address)
+            if zones.country_of(options['timezone']) != tcp['country']:
+                raise Failed(f'timezone {options["timezone"]} is not a zone of the exit country {tcp["country"]}')
             samples = {'terminal': tcp['ip'], 'udp': udp['public_ip'], 'browser': seen['ip'], 'claude': app['tcp']['ip']}
             if len(set(samples.values())) != 1:
                 raise Failed('terminal, UDP, browser and Claude exits differ: ' + json.dumps(samples))
             return {'country': tcp['country'], 'expected_country': options['expected_country'],
+                    'timezone': options['timezone'],
                     'mainland_china': 'not in a mainland range and not located in CN', 'sampled_ip': tcp['ip'],
                     'samples': list(samples), 'scope': 'these samples only'}
         record('exit_consistency', exit_consistency)
@@ -372,7 +376,7 @@ SUMMARIES = {
                               if 'kernel_direct_denied' in e else 'gateway removed: terminal, browser and Claude blocked'),
     'udp_policy': lambda e: f'STUN sees {e["stun"]["public_ip"]} through the node',
     'ipv6_policy': lambda e: f'{e["global_addresses"]} global addresses · requests blocked',
-    'exit_consistency': lambda e: f'{e["sampled_ip"]} ({e["country"]}) for terminal, UDP, browser and Claude',
+    'exit_consistency': lambda e: f'{e["sampled_ip"]} ({e["country"]}, {e["timezone"]}) for terminal, UDP, browser and Claude',
 }
 STATES = {'passed': 'ok', 'failed': 'fail', 'unknown': 'warn'}
 
