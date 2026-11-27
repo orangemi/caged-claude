@@ -291,6 +291,11 @@ def trace():
     return egress.observe_policy(request)
 
 
+def reference():
+    """Two more services' view of the exit, for the start's log only (see egress)."""
+    return egress.reference(request)
+
+
 def stun_request(target, timeout):
     cookie = 0x2112A442
     transaction = os.urandom(12)
@@ -407,10 +412,10 @@ def drill():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['egress', 'dns', 'verify', 'fail-closed', 'drill'])
+    parser.add_argument('action', choices=['egress', 'reference', 'dns', 'verify', 'fail-closed', 'drill'])
     args = parser.parse_args()
     try:
-        actions = {'egress': trace, 'dns': dns_checks, 'verify': verify, 'fail-closed': fail_closed, 'drill': drill}
+        actions = {'egress': trace, 'reference': reference, 'dns': dns_checks, 'verify': verify, 'fail-closed': fail_closed, 'drill': drill}
         print(json.dumps(actions[args.action]()))
     except Exception as error:
         print(json.dumps({'error': str(error)}))
