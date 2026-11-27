@@ -7,10 +7,11 @@ import subprocess
 import time
 import uuid
 from . import dialer, docker as engine, hostbridge, images, proxy, stateful, ui
-from .config import runtime_policy
+from .config import runtime_policy, start_timezone
 from .errors import CageError
 from .instance import Instance
 from .paths import ROOT, LABEL, LAYOUT_LABEL, LAYOUT_VERSION, IN_LAUNCHER
+from caged.shared import zones
 from caged.shared.policy import POLICY_ENV, APP_USER
 
 EMPTY_PROXY_ENV = [item for key in (
@@ -53,6 +54,7 @@ class Session:
         self.state = stateful.open_state(args)
 
     def start_network(self):
+        start_timezone(self.args)
         engine.ensure_names_available(self.instance.names)
         source = proxy.load_node(self.args.proxy_file_path, self.args.node)
         selected_proxy, addresses = proxy.pin_node(source, self.args.bootstrap_dns,
@@ -103,7 +105,43 @@ class Session:
         status, state = self.wait_ready()
         self.use_network(status, state)
         egress = self.check_egress()
+        source = self.settle_timezone(egress)
         ui.ok('Gateway', f'exit {egress["ip"]} ({egress["country"]}) · DNS through the node · IPv6 blocked')
+        ui.ok('Timezone', f'{self.policy["timezone"]} ({source})')
+        self.hint_locale(egress['country'])
+
+    def hint_locale(self, country):
+        """The locale is never refused; one line says whether the exit country uses its language."""
+        locale = self.policy['locale']
+        if zones.locale_fits(locale, country):
+            ui.ok('Locale', f'{locale} (a language of {country})')
+        else:
+            usual = ', '.join(zones.locales(country)[:3]) or 'none known'
+            ui.info('Locale', f'{locale}; locales of {country}: {usual} (set locale in app.yaml to use one)')
+
+    def settle_timezone(self, egress):
+        """The set timezone must lie in the exit country; unset, it follows the exit.
+
+        The gateway's monitor waits for this choice, so nothing is let out before it."""
+        country, configured = egress['country'], self.policy['timezone']
+        if configured:
+            if zones.country_of(configured) != country:
+                raise CageError(f'Timezone {configured} does not match the node: its exit {egress["ip"]} is in '
+                                f'{country}. Use a zone of {country} such as {", ".join(zones.examples(country))}, '
+                                'remove timezone from app.yaml to follow the node, or choose a node in '
+                                f'{zones.country_of(configured)}.')
+            chosen, source = configured, f'set, matches the exit in {country}'
+        else:
+            chosen = zones.for_country(country, egress.get('timezone'))
+            if not chosen:
+                raise CageError(f'No timezone is known for the exit country {country}; set timezone in app.yaml.')
+            located = 'located' if chosen == egress.get('timezone') else 'default'
+            source = f'from the node: {located} zone of {country}'
+        result = engine.write_private(self.instance.network, '/run/caged/timezone', chosen, timeout=15)
+        if result.returncode:
+            raise CageError('Cannot hand the timezone to the gateway.')
+        self.args.timezone = self.policy['timezone'] = chosen
+        return source
 
     def choose_node_path(self, node, addresses, server):
         """Direct, or through the host dialer when a host TUN/VPN would carry the
@@ -232,6 +270,12 @@ class Session:
         for key in ('node', 'dns_upstream', 'controller_port', 'mixed_port', 'browser_ui_port'):
             if existing[key] != self.policy[key]:
                 raise CageError('Existing gateway differs from the requested configuration: ' + key)
+        # The gateway's timezone was settled when it started; an unset one follows it.
+        if existing.get('timezone'):
+            if self.policy['timezone'] not in (None, existing['timezone']):
+                raise CageError(f'The running instance uses timezone {existing["timezone"]}, not '
+                                f'{self.policy["timezone"]}; run ./cage down first to change it.')
+            self.args.timezone = self.policy['timezone'] = existing['timezone']
         bindings = state.get('NetworkSettings', {}).get('Ports', {}).get(f'{self.args.browser_ui_port}/tcp') or []
         local = [binding for binding in bindings if binding['HostIp'] == '127.0.0.1']
         if len(local) != 1:

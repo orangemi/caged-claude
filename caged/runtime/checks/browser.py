@@ -117,7 +117,7 @@ def observe(fault=False, settings_only=False):
         from caged.runtime.checks.network import request
         if is_mainland(ip):
             raise PolicyViolation('Browser exit IP is in a mainland China range; mainland exits are not allowed')
-        country, located_by, location_failures = egress.locate(ip, request)
+        country, _, located_by, location_failures = egress.locate(ip, request)
         if not country:
             raise RuntimeError('Browser exit IP measured, but every location service failed ('
                                + egress.summary(location_failures) + ')')

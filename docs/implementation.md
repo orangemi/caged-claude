@@ -242,7 +242,7 @@ IPv6 的输入、转发、输出也默认拒绝，仅允许回环。IPv4 输入�
 
 共享回环意味着同一网络空间里的进程可连接这些接口。控制器依靠鉴权进一步保护；其密钥仅放在网络容器文件系统中，浏览器没有挂载该目录。
 
-时区和语言同时在多层设置：系统 `TZ`、`/etc/timezone`、`/etc/localtime` 来自 `browser.timezone`；容器的初始化脚本在启动时设置时区文件，镜像不再固定时区。`LANG` 与 `LC_ALL` 来自 `browser.locale`；Chromium 使用 `browser.language`，并自动追加不带地区的语言回退项。
+时区和语言同时在多层设置：系统 `TZ`、`/etc/timezone`、`/etc/localtime` 来自根上的 `timezone`（省略时按节点出口选择）；容器的初始化脚本在启动时设置时区文件，镜像不再固定时区。`LANG` 与 `LC_ALL` 来自根上的 `locale`；Chromium 使用 `browser.language`，并自动追加不带地区的语言回退项。
 
 浏览器检查读取实际的 `Intl.DateTimeFormat()`、`navigator.language`、`navigator.languages` 和 `chrome://policy`。时区以浏览器自身的规范名称比较；系统检查核对时区文件是否指向同一个 zoneinfo 文件，以及该时区当前的实际 UTC 偏移，因此不固定 `+0800`，也适用于夏令时和合法的时区别名。
 

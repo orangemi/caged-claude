@@ -12,6 +12,10 @@ from unittest.mock import patch
 
 from caged.runtime.network import monitor, lease as gate
 from caged.host.config import DEFAULTS, resolve, runtime_policy, ConfigError
+from caged.host.paths import ROOT
+
+# The bundled example, not the developer's own config/app.yaml.
+EXAMPLE = {'CAGED_CLAUDE_SETTINGS': str(ROOT / 'config.example' / 'app.yaml')}
 
 GOOD = {'ok': True, 'evidence': {'exit': {'ip': '203.0.113.2', 'country': 'SG'}}}
 TEMPORARY = {'ok': False, 'kind': 'temporary', 'reason': 'No current evidence'}
@@ -108,15 +112,15 @@ class MonitorTransitions(unittest.TestCase):
         self.assertEqual(self.model.attempts, 0)
 
     def test_monitor_settings_precedence_and_timing_validation(self):
-        args = resolve(['--monitor-lease', '120'], environ={'CAGED_CLAUDE_MONITOR_LEASE': '100'})
+        args = resolve(['--monitor-lease', '120'], environ={**EXAMPLE, 'CAGED_CLAUDE_MONITOR_LEASE': '100'})
         self.assertEqual(args.monitor_lease, 120)
         with self.assertRaises(ConfigError):
-            resolve(['--monitor-lease', '10'], environ={})
+            resolve(['--monitor-lease', '10'], environ=EXAMPLE)
         with self.assertRaises(ConfigError):
-            resolve(['--browser-probe-port', '53'], environ={})
+            resolve(['--browser-probe-port', '53'], environ=EXAMPLE)
 
     def test_probe_response_cannot_be_replayed_or_forged(self):
-        options = runtime_policy(resolve([], environ={}))
+        options = runtime_policy(resolve(['--timezone', 'Asia/Singapore'], environ=EXAMPLE))
         private = {'session': 'this-session', 'agents': {'browser': '01' * 32, 'claude': '02' * 32}}
         response = {'role': 'browser', 'session': 'this-session', 'nonce': 'old-nonce',
                     'policy_digest': monitor.digest(options)}
@@ -140,7 +144,7 @@ class MonitorTransitions(unittest.TestCase):
         self.assertEqual(result['kind'], 'temporary')
 
     def test_background_network_checks_do_not_require_browser_debugging(self):
-        options = runtime_policy(resolve([], environ={}))
+        options = runtime_policy(resolve(['--timezone', 'Asia/Singapore'], environ=EXAMPLE))
         config = b'{"mode":"global"}'
         (self.root / 'config.json').write_bytes(config)
         (self.root / 'monitor-private.json').write_text(json.dumps({
@@ -163,7 +167,7 @@ class MonitorTransitions(unittest.TestCase):
                 monitor.check('critical')
 
     def test_signed_browser_policy_configuration_is_checked_without_a_page(self):
-        options = runtime_policy(resolve([], environ={}))
+        options = runtime_policy(resolve(['--timezone', 'Asia/Singapore'], environ=EXAMPLE))
         private = {'session': 'fixture-session', 'agents': {'browser': '01' * 32, 'claude': '02' * 32}}
         nonce = 'a' * 64
         actual = {'username': monitor.APP_USER, 'uid': options['puid'], 'gid': options['pgid'],

@@ -12,10 +12,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import yamlfile
 from .paths import ROOT
+from caged.shared import zones
 from caged.shared.policy import BROWSER_UI_PORTS
 DEFAULT_SETTINGS = ROOT / 'config' / 'app.yaml'
 PREFIX = 'CAGED_CLAUDE_'
-# Optional operational defaults; node, timezone and policy choices stay explicit.
+# Optional operational defaults; node and policy choices stay explicit.
 DEFAULTS = {
     'proxy_file_path': 'mihomo.yaml',
     'instance': 'caged-claude',
@@ -26,6 +27,8 @@ DEFAULTS = {
     # A host TUN/VPN carrying public traffic: auto uses the host dialer only then,
     # dialer always uses it, direct never (warns), block refuses to start.
     'host_tunnel': 'auto',
+    # None: the zone of the node's exit, chosen once the gateway has measured it.
+    'timezone': None,
     'locale': 'en_US.UTF-8',
     'language': 'en-US',
     'puid': 'host',
@@ -69,8 +72,9 @@ FIELDS = {
     'bootstrap_dns': ('proxy.bootstrap_dns', 'BOOTSTRAP_DNS'),
     'dns_upstream': ('proxy.dns_upstream', 'DNS_UPSTREAM'),
     'host_tunnel': ('proxy.host_tunnel', 'HOST_TUNNEL'),
-    'timezone': ('browser.timezone', 'TIMEZONE'),
-    'locale': ('browser.locale', 'LOCALE'),
+    # Both apply to the browser and Claude containers alike, so they sit at the top level.
+    'timezone': ('timezone', 'TIMEZONE'),
+    'locale': ('locale', 'LOCALE'),
     'language': ('browser.language', 'LANGUAGE'),
     'puid': ('browser.puid', 'PUID'),
     'pgid': ('browser.pgid', 'PGID'),
@@ -209,9 +213,16 @@ def resolve(argv=None, environ=None):
         parts = key.split('.')
         allowed.setdefault(parts[0], set()).update(parts[1:])
     allowed['proxy'].add('config')  # Legacy YAML alias; file_path takes precedence.
+    browser = data.get('browser') if isinstance(data, dict) else None
+    moved = [key for key in ('timezone', 'locale') if isinstance(browser, dict) and key in browser]
+    if moved:
+        raise ConfigError(f'browser.{moved[0]} is now the top-level key {moved[0]}; move it out of the browser section.')
     if not isinstance(data, dict) or set(data) - set(allowed):
-        raise ConfigError('Unknown application YAML section; supported: proxy, browser, ports, instance, workspace, claude, state, host_bridge, monitor')
+        raise ConfigError('Unknown application YAML section; supported: proxy, browser, ports, instance, timezone, '
+                          'locale, workspace, claude, state, host_bridge, monitor')
     for section, keys in allowed.items():
+        if keys and section in data and data[section] is None:
+            data[section] = {}  # a section whose keys are all commented out
         if keys and section in data and (not isinstance(data[section], dict) or set(data[section]) - keys):
             raise ConfigError('Unknown or invalid application configuration section: ' + section)
     args.sources = {}
@@ -232,17 +243,13 @@ def resolve(argv=None, environ=None):
                 value, source = DEFAULTS[name], 'default'
         setattr(args, name, value)
         args.sources[name] = source
-    for name in ('node', 'timezone', 'locale', 'language', 'instance', 'shm_size', 'host_tunnel'):
+    for name in ('node', 'locale', 'language', 'instance', 'shm_size', 'host_tunnel'):
         value = getattr(args, name)
         if not isinstance(value, str) or not value.strip():
             raise ConfigError(name + ' must be a non-empty string')
         setattr(args, name, value.strip())
     if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,47}', args.instance):
         raise ConfigError('instance must be a Docker name of 1–48 characters')
-    try:
-        ZoneInfo(args.timezone)
-    except (ZoneInfoNotFoundError, ValueError):
-        raise ConfigError('Unknown timezone: ' + args.timezone) from None
     if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_.@-]{0,63}', args.locale):
         raise ConfigError('Invalid locale name')
     if not re.fullmatch(r'[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*', args.language):
@@ -261,6 +268,7 @@ def resolve(argv=None, environ=None):
             raise ConfigError('expected_country cannot be CN: mainland China exits are always refused')
     else:
         raise ConfigError('expected_country must be a two-letter country code, null, or any')
+    check_timezone(args)
     for name in ('port', 'controller_port', 'mixed_port', 'debug_port', 'browser_probe_port', 'claude_probe_port'):
         setattr(args, name, integer(getattr(args, name), name, 1, 65535))
     if not isinstance(args.ui_scheme, str) or args.ui_scheme not in BROWSER_UI_PORTS:
@@ -393,6 +401,36 @@ def resolve(argv=None, environ=None):
     ports += string_list(env.get('CAGED_HOST_PROXY_PORTS', ''), 'CAGED_HOST_PROXY_PORTS')
     args.host_proxy_ports = sorted({integer(value, 'ports.host_proxy', 1, 65535) for value in ports})
     return args
+
+
+def check_timezone(args):
+    """None (follow the node) or a known zone; start_timezone compares it with the country."""
+    if args.timezone is None or (isinstance(args.timezone, str) and args.timezone.strip().lower() in ('', 'auto')):
+        args.timezone = None
+        return
+    if not isinstance(args.timezone, str):
+        raise ConfigError('timezone must be a timezone name such as America/New_York, or auto')
+    args.timezone = args.timezone.strip()
+    try:
+        ZoneInfo(args.timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise ConfigError('Unknown timezone: ' + args.timezone) from None
+
+
+def start_timezone(args):
+    """Before a start: a set timezone must name a zone of one country, the expected one if set.
+
+    Only starts check this, so ./cage nodes, status and down still work after an edit."""
+    if args.timezone is None:
+        return
+    country = zones.country_of(args.timezone)
+    if not country:
+        raise ConfigError(f'Timezone {args.timezone} belongs to no country, so no node can match it. '
+                          'Use a zone such as America/New_York, or remove timezone to follow the node.')
+    if args.expected_country and country != args.expected_country:
+        raise ConfigError(f'Timezone {args.timezone} is in {country}, but proxy.expected_country is '
+                          f'{args.expected_country}. Use a zone of {args.expected_country} such as '
+                          f'{", ".join(zones.examples(args.expected_country))}, or remove timezone to follow the node.')
 
 
 def runtime_policy(args):

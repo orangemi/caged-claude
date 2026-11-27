@@ -5,6 +5,7 @@ none carries cookies, credentials or project identifiers."""
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import ipaddress
 import json
+import re
 from pathlib import Path
 import time
 from caged.shared.policy import policy, check_country, PolicyViolation
@@ -20,8 +21,9 @@ IP_SOURCES = [
     ('geojs', 'https://ipv4.geojs.io/v1/ip'),
 ]
 # Tried in order; the first answer that names the queried IP and a country wins.
+# Its timezone, when it gives one, is where the launcher looks first (zones.py).
 LOCATION_SOURCES = [
-    ('ipwho.is', 'https://ipwho.is/{ip}?fields=success,ip,country_code', True),
+    ('ipwho.is', 'https://ipwho.is/{ip}?fields=success,ip,country_code,timezone', True),
     ('ip.sb', 'https://api.ip.sb/geoip/{ip}', False),
     ('ipwhois.app', 'https://ipwhois.app/json/{ip}', True),
     ('geojs', 'https://get.geojs.io/v1/ip/geo/{ip}.json', False),
@@ -102,15 +104,24 @@ def cached(address):
     except (OSError, ValueError, AttributeError):
         return None
     if entry and 0 <= time.time() - entry['at'] < CACHE_SECONDS:
-        return entry['country'], entry['source'] + ' (cached)'
+        return entry['country'], entry.get('timezone'), entry['source'] + ' (cached)'
     return None
 
 
-def remember(address, country, source):
+def zone_name(value):
+    """An IANA name from a service's timezone field: a string or {"id": ...}."""
+    if isinstance(value, dict):
+        value = value.get('id')
+    if isinstance(value, str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+){1,2}', value.strip()):
+        return value.strip()
+    return None
+
+
+def remember(address, country, timezone, source):
     try:
         data = json.loads(CACHE.read_text()) if CACHE.exists() else {}
         data = {key: value for key, value in data.items() if time.time() - value['at'] < CACHE_SECONDS}
-        data[address] = {'country': country, 'source': source, 'at': time.time()}
+        data[address] = {'country': country, 'timezone': timezone, 'source': source, 'at': time.time()}
         temporary = CACHE.with_suffix('.tmp')
         temporary.write_text(json.dumps(data))
         temporary.replace(CACHE)
@@ -119,10 +130,10 @@ def remember(address, country, source):
 
 
 def locate(address, fetch, sources=LOCATION_SOURCES):
-    """(country, source, {source: reason}); country is None when every service failed."""
+    """(country, timezone, source, {source: reason}); country is None when every service failed."""
     hit = cached(address)
     if hit:
-        return hit[0], hit[1], {}
+        return (*hit, {})
     failures = {}
     for name, template, require_success in sources:
         try:
@@ -142,9 +153,10 @@ def locate(address, fetch, sources=LOCATION_SOURCES):
         except Exception as error:
             failures[name] = describe(error)
             continue
-        remember(address, country, name)
-        return country, name, failures
-    return None, None, failures
+        timezone = zone_name(value.get('timezone'))
+        remember(address, country, timezone, name)
+        return country, timezone, name, failures
+    return None, None, None, failures
 
 
 def summary(failures):
@@ -167,12 +179,12 @@ def observe(fetch, expected=None):
     # A mainland range match needs no location evidence.
     if is_mainland(address):
         raise PolicyViolation('Exit IP is in a mainland China range; mainland exits are not allowed')
-    country, located_by, location_failures = locate(address, fetch)
+    country, timezone, located_by, location_failures = locate(address, fetch)
     if not country:
         raise RuntimeError(f'Exit IP measured, but every location service failed ({summary(location_failures)}); '
                            'retry or choose another node')
     check_country(country, expected, address)
-    return {'ip': address, 'country': country, 'ip_source': source, 'location_source': located_by,
+    return {'ip': address, 'country': country, 'timezone': timezone, 'ip_source': source, 'location_source': located_by,
             'ip_failures': failures, 'location_failures': location_failures}
 
 

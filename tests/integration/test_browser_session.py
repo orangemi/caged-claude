@@ -27,7 +27,7 @@ class BrowserRecoveryRuntime(unittest.TestCase):
         self.name = 'caged-browser-test-' + uuid.uuid4().hex[:12]
         self.addCleanup(self.docker, 'rm', '-f', '-v', self.name, check=False)
         self.docker('run', '-d', '--name', self.name, '--network', 'none',
-                    '--shm-size=512m', '-e', 'TZ=Etc/UTC',
+                    '--shm-size=512m', '-e', 'TZ=Asia/Singapore',
                     '-e', 'LC_ALL=en_US.UTF-8', '-e', 'LANG=en_US.UTF-8',
                     '-e', 'CHROME_CLI=--lang=en-US --accept-lang=en-US,en '
                           '--remote-debugging-address=127.0.0.1 --remote-debugging-port=9222',
@@ -84,7 +84,7 @@ class BrowserRecoveryRuntime(unittest.TestCase):
     def test_last_tab_last_window_and_crash_reopen_a_usable_new_tab(self):
         pid = self.assert_usable()
         options = runtime_policy(resolve(['--settings', str(ROOT / 'config.example/app.yaml'),
-                                          '--timezone', 'Etc/UTC'], environ={}))
+                                          '--timezone', 'Asia/Singapore'], environ={}))
         probe = self.docker('run', '--rm', '--network', 'container:' + self.name,
                            '-e', POLICY_ENV + '=' + json.dumps(options), '--entrypoint', 'python3',
                            os.environ.get('CAGED_BROWSER_TEST_PROBE_IMAGE', 'caged-claude-network:local'),

@@ -12,7 +12,8 @@ import sys
 import threading
 import time
 import argparse
-from caged.shared.policy import policy
+from zoneinfo import ZoneInfo
+from caged.shared.policy import POLICY_ENV, policy
 from .lease import PROBE_MARK, initialize
 from .mihomo import NODE, TUN, api, make_config
 from .firewall import command, firewall_rules
@@ -57,6 +58,31 @@ def forward_to_unix(path):
             threading.Thread(target=serve, args=(client,), daemon=True).start()
     threading.Thread(target=accept, daemon=True).start()
     return listener.getsockname()[1]
+
+
+def chosen_timezone(options):
+    """The timezone the launcher wrote after comparing it with the measured exit, if any yet."""
+    try:
+        name = (ROOT / 'timezone').read_text().strip()
+    except OSError:
+        return None
+    ZoneInfo(name)
+    if options['timezone'] not in (None, name):
+        raise RuntimeError('The launcher chose a timezone other than the configured one')
+    return name
+
+
+def write_ready(value):
+    temporary = ROOT / 'ready.json.tmp'
+    temporary.write_text(json.dumps(value))
+    temporary.replace(ROOT / 'ready.json')
+
+
+def start_monitor(options):
+    environment = {**os.environ, POLICY_ENV: json.dumps(options)}
+    monitor = subprocess.Popen([sys.executable, '-u', '-m', 'caged.runtime.network.monitor'], env=environment)
+    (ROOT / 'monitor.pid').write_text(str(monitor.pid))
+    return monitor
 
 
 def main():
@@ -146,20 +172,26 @@ COMMIT
             time.sleep(0.2)
         if not ready:
             raise RuntimeError('Gateway did not become ready; browser was not started')
-        (ROOT / 'ready.json').write_text(json.dumps({
+        ready_state = {
             'mode': 'global', 'node': payload['display_name'],
             'dns': '127.0.0.1', 'ipv6': 'blocked', 'kill_switch': True,
             'policy': options, 'pinned': payload.get('pinned') or {'host': None, 'addresses': addresses},
-        }))
+        }
+        write_ready(ready_state)
         print('Gateway ready: global mode; independent IPv4/IPv6 firewall installed.', flush=True)
-        monitor = subprocess.Popen([sys.executable, '-u', '-m', 'caged.runtime.network.monitor'])
-        (ROOT / 'monitor.pid').write_text(str(monitor.pid))
+        # Nothing is permitted out before the monitor runs, and it runs only with
+        # the timezone the launcher settled from the measured exit (zones.py).
         while not STOP and core.poll() is None:
-            if monitor.poll() is not None:
+            if monitor is None:
+                timezone = chosen_timezone(options)
+                if timezone:
+                    options = {**options, 'timezone': timezone}
+                    write_ready({**ready_state, 'policy': options})
+                    monitor = start_monitor(options)
+            elif monitor.poll() is not None:
                 from .lease import revoke
                 revoke()
-                monitor = subprocess.Popen([sys.executable, '-u', '-m', 'caged.runtime.network.monitor'])
-                (ROOT / 'monitor.pid').write_text(str(monitor.pid))
+                monitor = start_monitor(options)
             time.sleep(0.2)
     finally:
         (ROOT / 'ready.json').unlink(missing_ok=True)

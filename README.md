@@ -27,11 +27,11 @@
 proxy:
   node: "🇸🇬 Singapore 01"       # ./cage nodes 列出的名字
   expected_country: SG          # 出口国家；不限制就写 any
-browser:
-  timezone: Asia/Singapore
 workspace:                      # 要交给 Claude 的项目目录，按原路径挂载
   - ~/Projects/my-project
 ```
+
+时区不用填：启动时按节点出口 IP 所在地自动选择，浏览器和 shell 都使用它。要固定时区就在根上写 `timezone`，但它必须属于出口国家，否则拒绝启动。locale 默认 `en_US.UTF-8`，可在根上用 `locale` 修改；它不必属于出口国家，不属于时启动时只提示一行。
 
 然后启动：
 

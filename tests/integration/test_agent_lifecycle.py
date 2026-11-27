@@ -67,7 +67,7 @@ class AgentLifecycle(unittest.TestCase):
         actual = value['observation']
         for key, expected in {'username': 'claude-user', 'uid': 1000, 'gid': 1000,
                               'user_env': 'claude-user', 'logname': 'claude-user',
-                              'timezone': 'Etc/UTC', 'system_timezone': 'Etc/UTC',
+                              'timezone': 'Asia/Singapore', 'system_timezone': 'Asia/Singapore',
                               'offset': '+0000', 'locale': 'en_US.UTF-8',
                               'lc_all': 'en_US.UTF-8', 'language': 'en_US',
                               'localtime_matches': True, 'locale_valid': True,
@@ -83,8 +83,8 @@ class AgentLifecycle(unittest.TestCase):
         self.key = secrets.token_hex(32)
         self.addCleanup(self.docker, 'rm', '-f', '-v', self.name, check=False)
         self.options = runtime_policy(resolve(['--settings', str(ROOT / 'config.example/app.yaml'),
-                                               '--timezone', 'Etc/UTC', '--puid', '1000', '--pgid', '1000'], environ={}))
-        values = {'PUID': '1000', 'PGID': '1000', 'TZ': 'Etc/UTC', 'USER': 'claude-user', 'LOGNAME': 'claude-user',
+                                               '--timezone', 'Asia/Singapore', '--puid', '1000', '--pgid', '1000'], environ={}))
+        values = {'PUID': '1000', 'PGID': '1000', 'TZ': 'Asia/Singapore', 'USER': 'claude-user', 'LOGNAME': 'claude-user',
                   'LC_ALL': 'en_US.UTF-8', 'LANG': 'en_US.UTF-8', 'LANGUAGE': 'en_US',
                   POLICY_ENV: json.dumps(self.options)}
         environment = [item for key, value in values.items() for item in ('-e', key + '=' + value)]

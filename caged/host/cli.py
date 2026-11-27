@@ -55,6 +55,8 @@ def show_status(instance, args=None):
         if args is not None:
             node = report['node_address'] = pinned_status(gateway, args)
             rows.append(('ok' if 'still current' in node or 'fixed in the node file' in node else 'warn', 'Node', node))
+        timezone = report['timezone'] = gateway_timezone(gateway)
+        rows.append(('info' if timezone else 'warn', 'Timezone', timezone or 'not settled yet (startup did not finish)'))
     if args is not None:
         state = stateful.open_state(args)
         report.update(environment=ui.short(state.describe(), ROOT), host_bridge=hostbridge.status(args, state),
@@ -67,6 +69,15 @@ def show_status(instance, args=None):
     ui.heading(f'Instance {instance.name}')
     for kind, label, text in rows:
         ui.step(kind, label, text, out=True)
+
+
+def gateway_timezone(gateway):
+    """The timezone the browser and Claude use, settled against the exit at start."""
+    result = engine.docker('exec', gateway['Id'], 'cat', '/run/caged/ready.json', check=False)
+    try:
+        return (json.loads(result.stdout).get('policy') or {}).get('timezone') if result.returncode == 0 else None
+    except ValueError:
+        return None
 
 
 def pinned_status(gateway, args):

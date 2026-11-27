@@ -101,13 +101,20 @@ class ExitSampling(unittest.TestCase):
 
     def test_location_must_name_the_queried_ip_and_a_country(self):
         answers = iter([(200, json.dumps({'success': False, 'ip': '8.8.8.8', 'country_code': 'US'})),
-                        location('8.8.4.4'), (429, ''), (200, '[]'), location('8.8.8.8', 'us')])
-        country, source, failures = egress.locate('8.8.8.8', lambda url, timeout: next(answers))
-        self.assertEqual((country, source), ('US', 'ipapi.co'))
+                        location('8.8.4.4'), (429, ''), (200, '[]'),
+                        location('8.8.8.8', 'us', timezone='America/Chicago')])
+        country, timezone, source, failures = egress.locate('8.8.8.8', lambda url, timeout: next(answers))
+        self.assertEqual((country, timezone, source), ('US', 'America/Chicago', 'ipapi.co'))
         self.assertEqual(list(failures), ['ipwho.is', 'ip.sb', 'ipwhois.app', 'geojs'])
         self.assertEqual(failures['ipwhois.app'], 'HTTP 429')
         # Cached afterwards: no request at all.
-        self.assertEqual(egress.locate('8.8.8.8', None)[:2], ('US', 'ipapi.co (cached)'))
+        self.assertEqual(egress.locate('8.8.8.8', None)[:3], ('US', 'America/Chicago', 'ipapi.co (cached)'))
+
+    def test_location_timezone_is_an_iana_name_or_nothing(self):
+        for value, expected in (({'id': 'Asia/Tokyo', 'utc': '+09:00'}, 'Asia/Tokyo'), ('America/Indiana/Knox', 'America/Indiana/Knox'),
+                                ('+09:00', None), ('../../etc/passwd', None), ('JST', None), (None, None)):
+            with self.subTest(value=value):
+                self.assertEqual(egress.zone_name(value), expected)
 
     def test_observe_refuses_mainland_exits_and_explains_missing_evidence(self):
         with self.assertRaisesRegex(PolicyViolation, 'mainland'):
