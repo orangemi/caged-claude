@@ -133,6 +133,19 @@ class NodePath(DialerTest):
         self.assertEqual((node['server'], node['interface-name'], addresses), ('127.0.0.1', 'lo', []))
         self.assertEqual(mounts[1], f'type=bind,src={self.folder}/sock/one,dst=/run/caged-dialer,readonly')
 
+    def test_wsl_auto_uses_a_running_dialer_even_when_no_tunnel_is_seen(self):
+        mirrored = {'CAGED_HOST_WSL': '1', 'CAGED_WSL_NETWORKING': 'mirrored'}
+        _, path, output = self.choose('auto', {}, self.ok, system='Linux', env=mirrored)
+        self.assertEqual(path['kind'], 'relay')
+        self.assertIn('bypassing the host routes', output)
+        # Without a running dialer, auto stays direct and quiet.
+        (self.folder / 'status.json').unlink()
+        _, path, output = self.choose('auto', {}, self.ok, running=False, system='Linux', env=mirrored)
+        self.assertEqual((path, output), ({'kind': 'direct'}, ''))
+        # macOS keeps relying on the visible routes.
+        _, path, _ = self.choose('auto', {}, self.ok)
+        self.assertEqual(path, {'kind': 'direct'})
+
     def test_wsl_relay_problems_fall_back_only_in_auto(self):
         nat = {'CAGED_HOST_WSL': '1', 'CAGED_WSL_NETWORKING': 'nat'}
         session, path, output = self.choose('auto', {'1.1.1.1': 'Mihomo'}, self.ok, system='Linux', env=nat)

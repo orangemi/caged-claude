@@ -105,7 +105,12 @@ class Session:
                    'Clash/mihomo TUN or a VPN, which would carry the connection to the selected node.')
         if found and mode == 'block':
             raise CageError(message + ' Turn off the host TUN/VPN, or set proxy.host_tunnel to auto.')
-        if mode == 'direct' or (mode == 'auto' and not found):
+        # WSL cannot see the Windows routes, and the dialer's own look at them may
+        # miss a TUN; there auto uses a running dialer whatever that look found.
+        prefer = mode == 'auto' and os.environ.get('CAGED_HOST_WSL') == '1' and bool(running)
+        if prefer and not found:
+            message = 'WSL cannot see whether Windows routes public traffic through a TUN or VPN.'
+        if mode == 'direct' or (mode == 'auto' and not found and not prefer):
             if found:
                 print('Warning: ' + message + ' proxy.host_tunnel is direct, so it is used anyway.', file=sys.stderr, flush=True)
             return {'kind': 'direct'}
