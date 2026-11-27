@@ -72,8 +72,9 @@ FIELDS = {
     'bootstrap_dns': ('proxy.bootstrap_dns', 'BOOTSTRAP_DNS'),
     'dns_upstream': ('proxy.dns_upstream', 'DNS_UPSTREAM'),
     'host_tunnel': ('proxy.host_tunnel', 'HOST_TUNNEL'),
-    'timezone': ('browser.timezone', 'TIMEZONE'),
-    'locale': ('browser.locale', 'LOCALE'),
+    # Both apply to the browser and Claude containers alike, so they sit at the top level.
+    'timezone': ('timezone', 'TIMEZONE'),
+    'locale': ('locale', 'LOCALE'),
     'language': ('browser.language', 'LANGUAGE'),
     'puid': ('browser.puid', 'PUID'),
     'pgid': ('browser.pgid', 'PGID'),
@@ -212,8 +213,13 @@ def resolve(argv=None, environ=None):
         parts = key.split('.')
         allowed.setdefault(parts[0], set()).update(parts[1:])
     allowed['proxy'].add('config')  # Legacy YAML alias; file_path takes precedence.
+    browser = data.get('browser') if isinstance(data, dict) else None
+    moved = [key for key in ('timezone', 'locale') if isinstance(browser, dict) and key in browser]
+    if moved:
+        raise ConfigError(f'browser.{moved[0]} is now the top-level key {moved[0]}; move it out of the browser section.')
     if not isinstance(data, dict) or set(data) - set(allowed):
-        raise ConfigError('Unknown application YAML section; supported: proxy, browser, ports, instance, workspace, claude, state, host_bridge, monitor')
+        raise ConfigError('Unknown application YAML section; supported: proxy, browser, ports, instance, timezone, '
+                          'locale, workspace, claude, state, host_bridge, monitor')
     for section, keys in allowed.items():
         if keys and section in data and data[section] is None:
             data[section] = {}  # a section whose keys are all commented out
@@ -420,11 +426,11 @@ def start_timezone(args):
     country = zones.country_of(args.timezone)
     if not country:
         raise ConfigError(f'Timezone {args.timezone} belongs to no country, so no node can match it. '
-                          'Use a zone such as America/New_York, or remove browser.timezone to follow the node.')
+                          'Use a zone such as America/New_York, or remove timezone to follow the node.')
     if args.expected_country and country != args.expected_country:
         raise ConfigError(f'Timezone {args.timezone} is in {country}, but proxy.expected_country is '
                           f'{args.expected_country}. Use a zone of {args.expected_country} such as '
-                          f'{", ".join(zones.examples(args.expected_country))}, or remove browser.timezone to follow the node.')
+                          f'{", ".join(zones.examples(args.expected_country))}, or remove timezone to follow the node.')
 
 
 def runtime_policy(args):

@@ -13,11 +13,13 @@ proxy:
   # host_tunnel: auto  # 可选。宿主开着 TUN/VPN（如 Clash TUN）时：auto 自动经宿主拨号器绑定物理网卡连接节点；
   #                     # dialer 总是经拨号器；direct 总是直连（只警告）；block 拒绝启动。
 
-# 时区、locale、语言和 UID/GID 同时应用于 browser 与 claude 容器（浏览器和 shell 都生效）。
+# 时区和 locale 同时应用于 browser 与 claude 容器（浏览器和 shell 都生效）。
+# timezone: Asia/Singapore  # 可选。省略或 auto：按节点出口 IP 所在地自动选择；
+#                           # 填写时必须是出口国家的时区，否则拒绝启动。
+# locale: en_US.UTF-8       # 可选，默认 en_US.UTF-8；不要求属于出口国家，不属于时启动时提示一行。
+
+# 语言和 UID/GID 同样应用于两个容器。
 browser:
-  # timezone: Asia/Singapore  # 可选。省略或 auto：按节点出口 IP 所在地自动选择；
-  #                           # 填写时必须是出口国家的时区，否则拒绝启动。
-  # locale: en_US.UTF-8  # 可选，默认 en_US.UTF-8。
   # language: en-US  # 可选，默认 en-US；自动生成语言偏好 en-US,en。
   # puid: host  # 可选，默认 host，使用启动者的 UID；可显式指定整数，例如 1000。
   # pgid: host  # 可选，默认 host，使用启动者的主 GID；可显式指定整数，例如 1000。

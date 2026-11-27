@@ -30,6 +30,22 @@ class Zones(unittest.TestCase):
         self.assertEqual(zones.examples('US')[0], 'America/New_York')
 
 
+class Locales(unittest.TestCase):
+    def test_locale_language_is_compared_with_the_country_only_as_a_hint(self):
+        self.assertEqual(zones.locales('JP'), ['ja_JP.UTF-8'])
+        self.assertTrue(zones.locale_fits('en_US.UTF-8', 'SG'))
+        self.assertTrue(zones.locale_fits('zh_SG.UTF-8', 'SG'))
+        self.assertFalse(zones.locale_fits('en_US.UTF-8', 'JP'))
+        self.assertFalse(zones.locale_fits('C.UTF-8', 'US'))
+
+    def test_start_shows_one_line_and_never_refuses(self):
+        for locale, country, kind, text in (('en_US.UTF-8', 'US', 'ok', 'en_US.UTF-8 (a language of US)'),
+                                            ('en_US.UTF-8', 'JP', 'info', 'locales of JP: ja_JP.UTF-8')):
+            with self.subTest(country=country), patch.object(session_module.ui, kind) as shown:
+                session_module.Session.hint_locale(types.SimpleNamespace(policy={'locale': locale}), country)
+                self.assertIn(text, shown.call_args.args[1])
+
+
 class Settle(unittest.TestCase):
     def settle(self, configured, egress, returncode=0):
         fake = types.SimpleNamespace(policy={'timezone': configured}, args=types.SimpleNamespace(timezone=configured),

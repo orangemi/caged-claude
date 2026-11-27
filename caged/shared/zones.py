@@ -1,17 +1,20 @@
-"""Timezones of a country, from the bundled tzdata zone.tab.
+"""Timezones and locales of a country, from bundled tzdata and glibc lists.
 
 The cage's timezone must belong to the node's exit country: either the one the
-user set, or one chosen from the exit IP's location (docs/configuration.md).
+user set, or one chosen from the exit IP's location. The locale stays as set
+(en_US.UTF-8 by default); its country is only a hint (docs/configuration.md).
 """
 from pathlib import Path
 import zoneinfo
 
 DATA = Path(__file__).with_name('zone.tab')
+LOCALES = Path(__file__).with_name('locales.tab')
 # zone.tab lists a country's zones west to east or north to south; where its
 # first zone is not where most people live, the default names that one.
 DEFAULT = {'AU': 'Australia/Sydney', 'BR': 'America/Sao_Paulo', 'CA': 'America/Toronto',
            'RU': 'Europe/Moscow', 'UA': 'Europe/Kyiv', 'UZ': 'Asia/Tashkent'}
 _table = None
+_locales = None
 
 
 def table():
@@ -64,3 +67,21 @@ def examples(country, limit=3):
     names = countries.get(country) or []
     first = for_country(country)
     return ([first] if first else []) + [name for name in names if name != first][:limit - 1]
+
+
+def locales(country):
+    """The UTF-8 locales glibc has for a country, such as ja_JP.UTF-8 for JP."""
+    global _locales
+    if _locales is None:
+        _locales = {}
+        for line in LOCALES.read_text().splitlines():
+            if line and not line.startswith('#'):
+                code, name = line.split('\t')
+                _locales.setdefault(code, []).append(name)
+    return _locales.get(country) or []
+
+
+def locale_fits(name, country):
+    """Whether a locale's language is one glibc pairs with the country (en_US in SG: yes)."""
+    language = name.split('_')[0].split('.')[0].lower()
+    return any(item.split('_')[0] == language for item in locales(country))

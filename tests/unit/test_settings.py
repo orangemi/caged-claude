@@ -25,7 +25,8 @@ class Settings(unittest.TestCase):
         self.data['proxy'].update(file_path='mihomo.yaml', node='European fixture', expected_country='DE',
                                   dns_upstream='https://9.9.9.9/dns-query')
         self.data['browser'] = self.data.get('browser') or {}  # every example key is commented out
-        self.data['browser'].update(timezone='Europe/Berlin', locale='de_DE.UTF-8', language='de-DE',
+        self.data.update(timezone='Europe/Berlin', locale='de_DE.UTF-8')
+        self.data['browser'].update(language='de-DE',
                                     puid='host', pgid='host', shm_size='1g')
         self.data['ports'] = {'ui': 4321, 'controller': 19090, 'mixed': 19890, 'debug': 19222}
         self.data['instance'] = 'caged-claude'
@@ -53,7 +54,8 @@ class Settings(unittest.TestCase):
         del self.data['proxy']['file_path']
         del self.data['instance']
         del self.data['proxy']['dns_upstream']
-        for key in ('locale', 'language', 'puid', 'pgid', 'shm_size'):
+        del self.data['locale']
+        for key in ('language', 'puid', 'pgid', 'shm_size'):
             del self.data['browser'][key]
         del self.data['ports']
         self.write()
@@ -73,7 +75,7 @@ class Settings(unittest.TestCase):
 
     def test_config_environment_and_cli_can_override_omitted_default_fields(self):
         self.data['ports'] = {'ui': 4567}
-        del self.data['browser']['locale']
+        del self.data['locale']
         del self.data['browser']['language']
         self.write()
         args = self.parse(env={'CAGED_CLAUDE_LANGUAGE': 'fr-CA', 'CAGED_CLAUDE_PORT': '5678'})
@@ -117,10 +119,18 @@ class Settings(unittest.TestCase):
                 self.parse(flag, value)
 
     def test_explicit_invalid_optional_values_do_not_silently_use_defaults(self):
-        self.data['browser']['locale'] = None
+        self.data['locale'] = None
         self.write()
         with self.assertRaisesRegex(ConfigError, 'locale'):
             self.parse()
+
+    def test_timezone_and_locale_are_top_level_keys_only(self):
+        for key, value in (('timezone', 'Europe/Berlin'), ('locale', 'de_DE.UTF-8')):
+            with self.subTest(key=key):
+                data = {**self.data, 'browser': {**self.data['browser'], key: value}}
+                self.path.write_text(json.dumps(data))
+                with self.assertRaisesRegex(ConfigError, f'browser.{key} is now the top-level key {key}'):
+                    self.parse()
 
     def test_cli_overrides_environment_which_overrides_file(self):
         env = {'CAGED_CLAUDE_NODE': 'environment node', 'CAGED_CLAUDE_PORT': '5432',
@@ -199,10 +209,10 @@ class Settings(unittest.TestCase):
 
     def test_timezone_follows_the_node_unless_set_and_must_name_a_country(self):
         for value in (None, '', 'auto', 'AUTO'):
-            self.data['browser']['timezone'] = value
+            self.data['timezone'] = value
             self.write()
             self.assertIsNone(self.parse().timezone)
-        del self.data['browser']['timezone']
+        del self.data['timezone']
         self.write()
         self.assertIsNone(self.parse().timezone)
         # Set: a zone of the expected country, and of some country at all; checked when starting,

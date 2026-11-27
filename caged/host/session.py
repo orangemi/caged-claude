@@ -108,6 +108,16 @@ class Session:
         source = self.settle_timezone(egress)
         ui.ok('Gateway', f'exit {egress["ip"]} ({egress["country"]}) · DNS through the node · IPv6 blocked')
         ui.ok('Timezone', f'{self.policy["timezone"]} ({source})')
+        self.hint_locale(egress['country'])
+
+    def hint_locale(self, country):
+        """The locale is never refused; one line says whether the exit country uses its language."""
+        locale = self.policy['locale']
+        if zones.locale_fits(locale, country):
+            ui.ok('Locale', f'{locale} (a language of {country})')
+        else:
+            usual = ', '.join(zones.locales(country)[:3]) or 'none known'
+            ui.info('Locale', f'{locale}; locales of {country}: {usual} (set locale in app.yaml to use one)')
 
     def settle_timezone(self, egress):
         """The set timezone must lie in the exit country; unset, it follows the exit.
@@ -118,13 +128,13 @@ class Session:
             if zones.country_of(configured) != country:
                 raise CageError(f'Timezone {configured} does not match the node: its exit {egress["ip"]} is in '
                                 f'{country}. Use a zone of {country} such as {", ".join(zones.examples(country))}, '
-                                'remove browser.timezone to follow the node, or choose a node in '
+                                'remove timezone from app.yaml to follow the node, or choose a node in '
                                 f'{zones.country_of(configured)}.')
             chosen, source = configured, f'set, matches the exit in {country}'
         else:
             chosen = zones.for_country(country, egress.get('timezone'))
             if not chosen:
-                raise CageError(f'No timezone is known for the exit country {country}; set browser.timezone.')
+                raise CageError(f'No timezone is known for the exit country {country}; set timezone in app.yaml.')
             located = 'located' if chosen == egress.get('timezone') else 'default'
             source = f'from the node: {located} zone of {country}'
         result = engine.write_private(self.instance.network, '/run/caged/timezone', chosen, timeout=15)

@@ -8,6 +8,10 @@ requested_locale=$(printf '%s' "$LC_ALL" | tr '[:upper:]' '[:lower:]' | tr -d '_
 if ! locale -a | tr '[:upper:]' '[:lower:]' | tr -d '_-' | grep -Fxq "$requested_locale"; then
     locale-gen "$LC_ALL"
 fi
+# The upstream init derives LANGUAGE from LC_ALL (ja_JP for ja_JP.UTF-8); put back
+# the launcher's value, from browser.language, which the probes compare against.
+python3 -c 'import json, os; print(json.loads(os.environ["CAGED_CLAUDE_POLICY"])["language"].replace("-", "_"), end="")' \
+    > /run/s6/container_environment/LANGUAGE
 
 # /config persists between containers, including the previous Openbox session.
 # Rewrite its autostart and menu on every start so an old state directory cannot

@@ -40,8 +40,8 @@ config/mihomo.yaml   # mihomo 节点和凭证
 | `proxy.bootstrap_dns` | `CAGED_CLAUDE_BOOTSTRAP_DNS` | `--bootstrap-dns` |
 | `proxy.dns_upstream` | `CAGED_CLAUDE_DNS_UPSTREAM` | `--dns-upstream` |
 | `proxy.host_tunnel` | `CAGED_CLAUDE_HOST_TUNNEL` | `--host-tunnel` |
-| `browser.timezone` | `CAGED_CLAUDE_TIMEZONE` | `--timezone` |
-| `browser.locale` | `CAGED_CLAUDE_LOCALE` | `--locale` |
+| `timezone` | `CAGED_CLAUDE_TIMEZONE` | `--timezone` |
+| `locale` | `CAGED_CLAUDE_LOCALE` | `--locale` |
 | `browser.language` | `CAGED_CLAUDE_LANGUAGE` | `--language` |
 | `browser.puid` / `browser.pgid` | `CAGED_CLAUDE_PUID` / `CAGED_CLAUDE_PGID` | `--puid` / `--pgid` |
 | `browser.shm_size` | `CAGED_CLAUDE_SHM_SIZE` | `--shm-size` |
@@ -69,9 +69,11 @@ config/mihomo.yaml   # mihomo 节点和凭证
 CAGED_CLAUDE_TIMEZONE=Asia/Tokyo CAGED_CLAUDE_PORT=3102 ./cage up --port 3103
 ```
 
-### 时区
+### 时区与 locale
 
-`browser.timezone` 可省略（或写 `auto`）。网关测得出口 IP 后，启动器按出口所在地选择时区：
+`timezone` 和 `locale` 写在 `app.yaml` 的根上，不在 `browser:` 下，因为它们同时作用于 browser 和 claude 两个容器；写在 `browser:` 下会报错并提示移动。
+
+`timezone` 可省略（或写 `auto`）。网关测得出口 IP 后，启动器按出口所在地选择时区：
 
 - 定位服务给出的时区属于出口国家时用它，例如美国出口可能是 `America/Chicago`；
 - 否则用该国的默认时区：通常是 tzdata `zone.tab` 中的第一个，澳大利亚、巴西、加拿大、俄罗斯、乌克兰、乌兹别克斯坦改用人口最多的时区（如 `Australia/Sydney`、`America/Toronto`）。
@@ -83,9 +85,11 @@ CAGED_CLAUDE_TIMEZONE=Asia/Tokyo CAGED_CLAUDE_PORT=3102 ./cage up --port 3103
 
 选定的时区同时写入两个容器的 `TZ`、`/etc/timezone` 和 `/etc/localtime`，因此浏览器的 `Intl` 和 shell 里的 `date` 一致。网关在收到这个时区之前不启动监控，也就不放行任何出站流量。运行中复检出口时，如果出口换到别的国家，监控判定违规并断网；`./cage status` 显示当前时区，审计的“出口符合已保存规则”一项也会核对它。附加到已运行实例的命令（`./cage claude`、审计等）沿用该实例的时区；显式指定不同的时区会报错，需要先 `./cage down`。
 
+`locale` 默认 `en_US.UTF-8`，写入两个容器的 `LANG` 与 `LC_ALL`。它不要求属于出口国家，也不会因此拒绝启动：启动时只提示一行，语言是出口国家使用的语言时显示 `✓ Locale`（例如新加坡出口的 `en_US.UTF-8`），否则显示该国的 locale 供参考（例如日本出口提示 `ja_JP.UTF-8`）。对照表来自 glibc 支持的 locale 列表（`caged/shared/locales.tab`）。
+
 切换地区时同时指定节点和期望国家，例如 `--node '🇯🇵 Japan 01' --expected-country JP`；没有固定时区时，时区随之变成 `Asia/Tokyo`。将 `proxy.expected_country` 设为 YAML `null` 或 `any`（命令行/环境变量使用 `any`）可以取消国家限制，仍检查连通性及审计中的出口一致性。
 
-`browser.language` 使用 `ja-JP` 等语言标签，自动生成 `ja-JP,ja` 偏好；`browser.locale` 控制系统 locale。两个应用的用户名固定为 `claude-user`；Claude 的 HOME 是 `/home/claude`，浏览器的是 `/config`。`puid`、`pgid` 默认都是 `host`，每次启动读取当前进程的 UID/主 GID；通常等同于运行终端的 `id -u` 和 `id -g`。可显式填写整数；环境变量和 CLI 仍按优先级分别覆盖。使用普通用户执行 `./cage up` 即可，使用 sudo 启动会读到 root 身份。时区文件在容器启动时设置，不再烘焙进镜像。
+`browser.language` 使用 `ja-JP` 等语言标签，自动生成 `ja-JP,ja` 偏好；根上的 `locale` 控制系统 locale。两个应用的用户名固定为 `claude-user`；Claude 的 HOME 是 `/home/claude`，浏览器的是 `/config`。`puid`、`pgid` 默认都是 `host`，每次启动读取当前进程的 UID/主 GID；通常等同于运行终端的 `id -u` 和 `id -g`。可显式填写整数；环境变量和 CLI 仍按优先级分别覆盖。使用普通用户执行 `./cage up` 即可，使用 sudo 启动会读到 root 身份。时区文件在容器启动时设置，不再烘焙进镜像。
 
 `proxy.file_path` 省略时使用应用 YAML 同目录的 `mihomo.yaml`；在 YAML 中填写相对路径也基于该 YAML 所在目录。命令行和环境变量传入的相对路径基于调用目录。
 

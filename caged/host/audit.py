@@ -36,7 +36,7 @@ REMEDIES = {
     'fail_closed': 'run the check again; if it keeps failing, ./cage down && ./cage up',
     'udp_policy': 'make sure the node allows UDP; without UDP the STUN probe fails',
     'ipv6_policy': 'run ./cage down && ./cage up to rebuild the gateway',
-    'exit_consistency': 'choose a node outside mainland China that matches proxy.expected_country and browser.timezone',
+    'exit_consistency': 'choose a node outside mainland China that matches proxy.expected_country and timezone',
 }
 DRILL_UID = 65533
 DRILL_RULE = ['uidrange', f'{DRILL_UID}-{DRILL_UID}', 'lookup', 'main', 'priority', '100']
