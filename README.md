@@ -107,10 +107,11 @@ macOS 上，整个环境是一个 ext4 镜像文件 `state/<实例>/disk.img`。
 ## 出问题时
 
 - 先看 `./cage status` 和 `./cage logs`。网络断开时，日志里会写明原因。
+- 终端只显示每一步的结论（✓ 通过、✗ 失败、! 需要注意）。镜像构建和前台检查时容器自身的输出写在 `state/.logs/`，失败时会提示具体文件。给脚本用时加 `--json`，例如 `./cage status --json`、`./cage check audit --json`。
 - `permission denied: ./cage`：执行 `chmod +x cage`。
 - 启动时报 `Unable to locate package`：先执行 `sudo apt-get update`。
 - 检查网络隔离是否生效：`./cage check verify`。完整的 11 项审计：实例运行中时 `./cage check audit` 直接检查当前实例（不中断使用）；要用真实删除网关的方式演练断网，换一个新实例：`./cage check audit --instance caged-audit --port 3003`。结果保存在 `state/<实例>/last-audit.json`。
-- 宿主开着 Clash Verge 等 TUN：不需要关掉，也不需要加规则。`./cage` 会自动改用宿主拨号器，经物理网卡连接节点，启动时会打印 `Host dialer: node connection bound to en0 …`。`./cage status` 的 `host dialer` 一行显示它的状态，日志在 `state/.dialer/dialer.log`。
+- 宿主开着 Clash Verge 等 TUN：不需要关掉，也不需要加规则。`./cage` 会自动改用宿主拨号器，经物理网卡连接节点，启动时会打印 `✓ Host dialer  node connection bound to en0 …`。`./cage status` 的 `host dialer` 一行显示它的状态，日志在 `state/.dialer/dialer.log`。
 - 网络断开且原因提到 “node itself may be unreachable”：节点不通，或者节点域名换了 IP。先看 `./cage status` 中的 `node address`，需要时 `./cage down && ./cage up` 重新解析。
 
 ## 文档

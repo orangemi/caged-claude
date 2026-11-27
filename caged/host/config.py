@@ -193,6 +193,7 @@ def resolve(argv=None, environ=None):
     parser = argparse.ArgumentParser(description='Run browser and Claude containers behind a fail-closed proxy gateway.')
     parser.add_argument('action', nargs='?', default='start', choices=ACTIONS)
     parser.add_argument('--settings', help='application YAML; env: CAGED_CLAUDE_SETTINGS')
+    parser.add_argument('--json', action='store_true', help='print the result as JSON instead of text')
     for name, (key, variable) in FIELDS.items():
         flags = ['--' + name.replace('_', '-')]
         if name == 'proxy_file_path':

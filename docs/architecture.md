@@ -113,7 +113,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests/unit -t . -v
 
 应用探针生命周期回归可以单独执行。将 `CAGED_BROWSER_TEST_IMAGE` 和 `CAGED_CLAUDE_TEST_IMAGE` 分别设为已构建的新镜像，再运行 `python3 -m unittest tests.integration.test_agent_lifecycle -v`。测试使用无外网、无用户状态和无发布端口的临时容器，验证等待私有注册、签名环境报告、探针被杀后的自动拉起，以及 `docker restart` 后复用原身份自动恢复；未指定对应镜像的测试会跳过。
 
-`audit` 参考 Claude-Cage 的检查项目，但按本项目的容器结构取证。每一项独立判定：取得全部证据为“通过”，确认违规为“失败”，缺少证据为“未知”；一项缺证据不会掩盖其他项的结果。终端先打印逐项结论与处理建议，再输出完整 JSON，并写入 `state/<实例>/last-audit.json`；不是 11/11 时返回非零退出码。
+`audit` 参考 Claude-Cage 的检查项目，但按本项目的容器结构取证。每一项独立判定：取得全部证据为“通过”，确认违规为“失败”，缺少证据为“未知”；一项缺证据不会掩盖其他项的结果。终端逐项打印一行结论（英文标题见下表括号），未通过的项下面附 `Fix:` 处理建议；完整证据写入 `state/<实例>/last-audit.json`，加 `--json` 时改为把完整 JSON 打到标准输出。不是 11/11 时返回非零退出码。
 
 两种模式只在“代理故障关闭”一项上不同：
 
@@ -122,17 +122,17 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests/unit -t . -v
 
 | 检查 | 本项目的证据 |
 | --- | --- |
-| 环境外出站约束 | 默认拒绝的 IPv4/IPv6 防火墙未被改写，物理接口探针触发内核丢弃计数；浏览器只共享网关网络 |
-| 终端检测通道 | 无代理环境变量的 HTTPS 请求从 6 个出口 IP 服务中取得公网 IPv4（上一个失败或 1 秒无结果就并发下一个），再由 5 个定位服务按顺序给出国家；全部失败时请求 generate_204，区分“节点不通”和“节点屏蔽了检测服务” |
-| DNS 与解析约束 | 系统解析器仅为回环；本地 UDP/TCP 与新鲜递归 TXT 成功；显式节点 DoH；公共 UDP/53、TCP/53、DoT/853 被拒绝且丢弃计数增加 |
-| 系统时区与语言 | 实际环境、locale、`/etc/timezone`、`/etc/localtime` 和 UTC 偏移一致 |
-| 浏览器时区与语言 | 专用诊断标签读取 `Intl`、`navigator` 和 `chrome://policy` 中实际生效的 DNS 策略，随后关闭标签 |
-| 共享文件与宿主私有目录 | 精确核对明示 workspace 与 Claude 状态目录的挂载白名单；无额外绑定、网关凭证或 Docker socket；匿名卷随容器清理；随机令牌经 Claude 状态目录往返读写，宿主 `config/` 中的探针文件在环境内按宿主路径打不开 |
-| 宿主管理接口 | 元数据、网桥与宿主（macOS 上 host.docker.internal）的 22/2375/2376 及 `ports.host_proxy` 与宿主系统代理端口均不可达，私网丢弃计数增加；无网络管理/原始套接字权限；控制器匿名请求 401；仅发布 localhost UI；报告注明宿主桥是有意保留的通道 |
-| 代理故障关闭 | 当前实例：专用 UID 失去代理路由后 HTTPS/UDP/公共 DNS 均失败且直连拒绝计数增加，正向对照先通过。一次性实例：删除网关后，检查容器、Claude 的 TCP/DNS/UDP 与浏览器新鲜字面 IP 导航均失败 |
-| UDP 出站约束 | 保留经节点转发 UDP 的设计，以实际 STUN 出口和物理接口默认拒绝策略验证；与 Claude-Cage 默认阻断 UDP 的策略不同 |
-| IPv6 出站约束 | 全局 IPv6 地址为 0；实际 IPv6 请求失败；存在 IPv6 默认路由时，IPv6 默认拒绝计数必须增加 |
-| 出口符合已保存规则 | 出口 IP 不在内置的中国大陆网段（APNIC 分配给 CN 的地址），定位国家不是 CN，并符合期望国家；终端、UDP、浏览器、Claude 容器四种出口 IP 一致；不是永久固定 IP 保证 |
+| 环境外出站约束（Outbound containment） | 默认拒绝的 IPv4/IPv6 防火墙未被改写，物理接口探针触发内核丢弃计数；浏览器只共享网关网络 |
+| 终端检测通道（Terminal probe path） | 无代理环境变量的 HTTPS 请求从 6 个出口 IP 服务中取得公网 IPv4（上一个失败或 1 秒无结果就并发下一个），再由 5 个定位服务按顺序给出国家；全部失败时请求 generate_204，区分“节点不通”和“节点屏蔽了检测服务” |
+| DNS 与解析约束（DNS confinement） | 系统解析器仅为回环；本地 UDP/TCP 与新鲜递归 TXT 成功；显式节点 DoH；公共 UDP/53、TCP/53、DoT/853 被拒绝且丢弃计数增加 |
+| 系统时区与语言（System time and locale） | 实际环境、locale、`/etc/timezone`、`/etc/localtime` 和 UTC 偏移一致 |
+| 浏览器时区与语言（Browser time and locale） | 专用诊断标签读取 `Intl`、`navigator` 和 `chrome://policy` 中实际生效的 DNS 策略，随后关闭标签 |
+| 共享文件与宿主私有目录（Shared and private files） | 精确核对明示 workspace 与 Claude 状态目录的挂载白名单；无额外绑定、网关凭证或 Docker socket；匿名卷随容器清理；随机令牌经 Claude 状态目录往返读写，宿主 `config/` 中的探针文件在环境内按宿主路径打不开 |
+| 宿主管理接口（Host management ports） | 元数据、网桥与宿主（macOS 上 host.docker.internal）的 22/2375/2376 及 `ports.host_proxy` 与宿主系统代理端口均不可达，私网丢弃计数增加；无网络管理/原始套接字权限；控制器匿名请求 401；仅发布 localhost UI；报告注明宿主桥是有意保留的通道 |
+| 代理故障关闭（Fail-closed） | 当前实例：专用 UID 失去代理路由后 HTTPS/UDP/公共 DNS 均失败且直连拒绝计数增加，正向对照先通过。一次性实例：删除网关后，检查容器、Claude 的 TCP/DNS/UDP 与浏览器新鲜字面 IP 导航均失败 |
+| UDP 出站约束（UDP egress） | 保留经节点转发 UDP 的设计，以实际 STUN 出口和物理接口默认拒绝策略验证；与 Claude-Cage 默认阻断 UDP 的策略不同 |
+| IPv6 出站约束（IPv6 egress） | 全局 IPv6 地址为 0；实际 IPv6 请求失败；存在 IPv6 默认路由时，IPv6 默认拒绝计数必须增加 |
+| 出口符合已保存规则（Exit policy） | 出口 IP 不在内置的中国大陆网段（APNIC 分配给 CN 的地址），定位国家不是 CN，并符合期望国家；终端、UDP、浏览器、Claude 容器四种出口 IP 一致；不是永久固定 IP 保证 |
 
 本地隔离测试有可连通的 TCP、UDP、UDP/53、TCP/53 和 TCP/853 服务作正向对照，再验证网关运行与移除后均无法绕过。生命周期测试使用独立随机实例，可在日常浏览器运行时执行。
 

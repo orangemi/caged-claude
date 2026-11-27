@@ -134,7 +134,9 @@ class Monitor:
                           'exit': (self.evidence or {}).get('exit'), 'attempts': self.attempts})
         public = (self.state, self.reason)
         if public != self.last_published:
-            print(json.dumps({'network': self.state, 'reason': self.reason}), flush=True)
+            # Read by people through ./cage logs; the state file stays the machine interface.
+            stamp = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(self.wall()))
+            print(f'{stamp} UTC  outbound {self.state}: {self.reason}', flush=True)
             self.last_published = public
 
     def tick(self, run=sample):

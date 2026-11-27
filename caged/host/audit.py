@@ -10,32 +10,32 @@ from pathlib import Path
 import secrets
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
-from . import docker as engine, stateful
+from . import docker as engine, stateful, ui
 from .errors import CageError
 from .paths import ROOT
 from caged.shared.policy import check_country, PolicyViolation
 
 
 CHECKS = [
-    ('egress_policy', '环境外出站约束'), ('proxy_transport', '终端检测通道'),
-    ('dns_transport', 'DNS 与解析约束'), ('guest_settings', '系统时区与语言'),
-    ('browser_settings', '浏览器时区与语言'), ('filesystem_boundary', '共享文件与宿主私有目录'),
-    ('management_boundary', '宿主管理接口'), ('fail_closed', '代理故障关闭'),
-    ('udp_policy', 'UDP 出站约束'), ('ipv6_policy', 'IPv6 出站约束'),
-    ('exit_consistency', '出口符合已保存规则'),
+    ('egress_policy', 'Outbound containment'), ('proxy_transport', 'Terminal probe path'),
+    ('dns_transport', 'DNS confinement'), ('guest_settings', 'System time and locale'),
+    ('browser_settings', 'Browser time and locale'), ('filesystem_boundary', 'Shared and private files'),
+    ('management_boundary', 'Host management ports'), ('fail_closed', 'Fail-closed'),
+    ('udp_policy', 'UDP egress'), ('ipv6_policy', 'IPv6 egress'),
+    ('exit_consistency', 'Exit policy'),
 ]
 REMEDIES = {
-    'egress_policy': '执行 ./cage down && ./cage up 重建网关；不要手动修改网关防火墙',
-    'proxy_transport': '确认节点可用；无法连到任何检测服务时更换节点',
-    'dns_transport': '检查节点连通性，或在 proxy.dns_upstream 中增加其他 DoH 端点',
-    'guest_settings': '重新应用时区与语言后执行 ./cage down && ./cage up',
-    'browser_settings': '重启实例以加载浏览器设置；仍失败时查看各字段的期望值与实际值',
-    'filesystem_boundary': '只把项目目录配置为 workspace；不要共享主目录或 config/',
-    'management_boundary': '关闭宿主代理的局域网监听（allow-lan），或停止对外监听的宿主服务',
-    'fail_closed': '重新运行检查；持续失败时执行 ./cage down && ./cage up',
-    'udp_policy': '确认节点开启 UDP；不支持 UDP 的节点会让 STUN 探测失败',
-    'ipv6_policy': '执行 ./cage down && ./cage up 重建网关',
-    'exit_consistency': '选择非中国大陆、且符合 proxy.expected_country 的节点',
+    'egress_policy': 'run ./cage down && ./cage up to rebuild the gateway; do not edit its firewall by hand',
+    'proxy_transport': 'check that the node works; choose another node if no exit service answers',
+    'dns_transport': 'check the node connection, or list other DoH endpoints in proxy.dns_upstream',
+    'guest_settings': 'apply the timezone and language again, then ./cage down && ./cage up',
+    'browser_settings': 'restart the instance to load the browser settings; compare the expected and actual values',
+    'filesystem_boundary': 'mount only project directories as workspaces, not your home directory or config/',
+    'management_boundary': 'turn off LAN access (allow-lan) of the host proxy, or stop host services listening on all interfaces',
+    'fail_closed': 'run the check again; if it keeps failing, ./cage down && ./cage up',
+    'udp_policy': 'make sure the node allows UDP; without UDP the STUN probe fails',
+    'ipv6_policy': 'run ./cage down && ./cage up to rebuild the gateway',
+    'exit_consistency': 'choose a node outside mainland China that matches proxy.expected_country',
 }
 DRILL_UID = 65533
 DRILL_RULE = ['uidrange', f'{DRILL_UID}-{DRILL_UID}', 'lookup', 'main', 'priority', '100']
@@ -52,7 +52,7 @@ class Unknown(CageError):
 def part(source, key):
     """One probe result from network verify, raising when it is missing or failed."""
     if source is None:
-        raise Unknown('网络探针没有返回结果')
+        raise Unknown('the network probe returned no result')
     value = source.get(key) or {'error': 'missing'}
     if 'error' in value:
         raise (Failed if value.get('violation') else Unknown)(value['error'])
@@ -61,7 +61,7 @@ def part(source, key):
 
 def need(value, error, what):
     if value is None:
-        raise Unknown(f'未取得{what}：{error}')
+        raise Unknown(f'no {what}: {error}')
     return value
 
 
@@ -106,10 +106,10 @@ def filesystem_challenge(session):
         for path in (shared, reply, private):
             path.unlink(missing_ok=True)
     if observed['private_readable']:
-        raise Failed(f'环境内能打开宿主私有目录中的文件：{private_dir}')
+        raise Failed(f'the cage can open a file in the host-private directory {private_dir}')
     if not observed['shared_read'] or not answered:
-        raise Unknown('Claude 状态目录的共享读写往返没有完成')
-    return {'shared_round_trip': 'passed', 'private_probe': f'{private_dir} 在环境内不可见'}
+        raise Unknown('the read/write round trip through the Claude state directory did not complete')
+    return {'shared_round_trip': 'passed', 'private_probe': f'{private_dir} is not visible in the cage'}
 
 
 def live_drill(session):
@@ -129,18 +129,19 @@ def live_drill(session):
         engine.docker('exec', gateway, 'ip', 'rule', 'del', *DRILL_RULE, check=False)
     after = session.policy_snapshot()
     if not control['https_literal_ip']:
-        raise Unknown('故障演练的正向对照没有连通，无法区分“故障关闭”与“本来就不通”')
+        raise Unknown('the drill\'s positive control did not connect, so a closed path cannot be told from a dead one')
     leaked = [key for key in ('https_literal_ip', 'udp_stun', 'public_dns') if fault[key]]
     if leaked:
-        raise Failed('代理路由缺失时仍能直连：' + ', '.join(leaked))
+        raise Failed('without the proxy route these still connected directly: ' + ', '.join(leaked))
     if not grew(before, after, 'CAGED_DIRECT'):
-        raise Unknown('演练流量失败，但没有留下内核拒绝计数，无法确认由防火墙关闭')
-    return {'mode': '运行中实例：仅让一个专用 UID 的流量失去代理路由，用户连接与代理进程保持运行',
+        raise Unknown('the drill traffic failed but left no kernel drop count, so the firewall is not proven to have closed it')
+    return {'mode': 'running instance: only a dedicated UID loses the proxy route; your connections and the proxy keep running',
             'positive_control': control, 'fault': fault,
             'kernel_direct_denied': after['counters']['CAGED_DIRECT'] - before['counters']['CAGED_DIRECT'],
-            'udp_control': '通过' if control['udp_stun'] else '对照未通过（节点可能不支持 UDP），UDP 故障证据不计入',
-            'browser': '浏览器与终端共享同一网络命名空间与内核规则；浏览器自带的 DoH 已由受管策略关闭。'
-                       '真实浏览器的断网演练需要一次性实例：./cage check audit --instance <新实例名> --port <空闲端口>'}
+            'udp_control': 'passed' if control['udp_stun'] else 'failed (the node may not allow UDP); UDP is not counted',
+            'browser': 'the browser shares the network namespace and kernel rules with the terminal; its own DoH is off '
+                       'by policy. A real browser drill needs a disposable instance: '
+                       './cage check audit --instance <new name> --port <free port>'}
 
 
 def disposable_drill(session):
@@ -153,15 +154,15 @@ def disposable_drill(session):
                                             check=False, timeout=20))
     claude = probe_json(session.exec_probe(instance.claude, 'caged.runtime.checks.network', 'fail-closed',
                                            user=f'{session.args.puid}:{session.args.pgid}', check=False, timeout=25))
-    return {'mode': '一次性实例：真实删除网关容器', 'gateway_removed': True,
+    return {'mode': 'disposable instance: the gateway container was removed', 'gateway_removed': True,
             'terminal': terminal, 'browser': browser, 'claude': claude}
 
 
 def node_connection(path):
     if path.get('kind', 'direct') == 'direct':
-        return '网关直接连接固定的节点地址'
-    return (f'经宿主拨号器（{path["kind"]}）连接，出站绑定物理网卡 {path.get("interface")}'
-            + (f'，绕开宿主 TUN（{path["tunnel"]}）' if path.get('tunnel') else ''))
+        return 'the gateway connects to the pinned node addresses directly'
+    return (f'through the host dialer ({path["kind"]}) bound to {path.get("interface")}'
+            + (f', bypassing the host TUN ({path["tunnel"]})' if path.get('tunnel') else ''))
 
 
 def run_audit(session, live=False):
@@ -169,7 +170,7 @@ def run_audit(session, live=False):
     report = {'checked_at': datetime.now(timezone.utc).isoformat(), 'instance': instance.name,
               'mode': 'live' if live else 'disposable',
               'policy': {**options, 'udp': 'proxied', 'ipv6': 'blocked'},
-              'checks': [{'id': ident, 'title': title, 'state': 'unknown', 'evidence': '尚未完成检测'}
+              'checks': [{'id': ident, 'title': title, 'state': 'unknown', 'evidence': 'not checked yet'}
                          for ident, title in CHECKS]}
     rows = {row['id']: row for row in report['checks']}
 
@@ -189,7 +190,7 @@ def run_audit(session, live=False):
             permit = json.loads(session.exec_probe(session.network_container_id, 'caged.runtime.network.lease',
                                                    'status').stdout)
             if permit['state'] != 'open' or not permit['lease_remaining']:
-                raise CageError('外网许可当前未开放（' + permit.get('reason', '') + '）；先用 ./cage status 查看原因')
+                raise CageError('Outbound traffic is not open (' + permit.get('reason', '') + '); see ./cage status')
             (browser, browser_error), (claude, claude_error) = gather(session.check_browser), gather(session.check_claude)
         else:
             clients, error = gather(session.start_clients)
@@ -205,21 +206,22 @@ def run_audit(session, live=False):
                   (('gateway', instance.network), ('browser', instance.browser), ('claude', instance.claude))}
 
         def counters():
-            need(before, before_error, '检查前的策略快照')
-            return need(after, after_error, '检查后的策略快照')
+            need(before, before_error, 'policy snapshot before the probes')
+            return need(after, after_error, 'policy snapshot after the probes')
 
         def egress_policy():
             direct = part(network, 'physical_direct')
             counters()
             if not grew(before, after, 'CAGED_DIRECT'):
-                raise Unknown('物理网卡直连探针失败，但没有留下内核拒绝计数')
+                raise Unknown('the direct probe on the physical interface failed but left no kernel drop count')
             if not all(states[role] and states[role]['HostConfig']['NetworkMode'] == 'container:' + session.network_container_id
                        for role in ('browser', 'claude')):
-                raise Failed('浏览器或 Claude 使用了网关以外的 Docker 网络')
+                raise Failed('the browser or Claude uses a Docker network other than the gateway\'s')
             return {'firewall': after['ipv4_ipv6_default_deny'], 'direct': direct,
                     'kernel_direct_denied': after['counters']['CAGED_DIRECT'] - before['counters']['CAGED_DIRECT'],
-                    'layout': '浏览器、Claude 与无特权探针只共享网关的网络命名空间',
-                    'node_connection': node_connection(session.node_path)}
+                    'layout': 'the browser, Claude and the unprivileged probe share only the gateway\'s network namespace',
+                    'node_connection': node_connection(session.node_path),
+                    'node_interface': session.node_path.get('interface')}
         record('egress_policy', egress_policy)
 
         record('proxy_transport', lambda: part(network, 'tcp'))
@@ -228,138 +230,173 @@ def run_audit(session, live=False):
             dns = part(network, 'dns')
             counters()
             if not grew(before, after, 'CAGED_DNS', 3):
-                raise Unknown('公共 DNS 绕过探针失败，但内核拒绝计数不足')
+                raise Unknown('the public DNS bypass probes failed but the kernel drop count is too low')
             return {**dns, 'doh_via_selected_node': after['doh_via_node'],
                     'deny_packets': after['counters']['CAGED_DNS'] - before['counters']['CAGED_DNS']}
         record('dns_transport', dns_transport)
 
         def guest_settings():
-            observed = need(system, system_error, '浏览器容器的系统设置')
-            app = need(claude, claude_error, 'Claude 容器的检查结果')
+            observed = need(system, system_error, 'system settings from the browser container')
+            app = need(claude, claude_error, 'result of the Claude check')
             expected_offset = datetime.now(ZoneInfo(options['timezone'])).strftime('%z')
             if not (observed['tz'] == observed['timezone_file'] == options['timezone']
                     and observed['timezone_link_matches'] and observed['offset'] == expected_offset
                     and observed['lang'] == observed['lc_all'] == options['locale'] and observed['locale_ok']):
-                raise Failed('系统时区或语言与配置不一致')
+                raise Failed('the system timezone or language differs from the settings')
             if not (app['timezone'] == options['timezone'] and app['locale'] == options['locale']
                     and app['language'] == options['language'] and app['offset'] == observed['offset']):
-                raise Failed('Claude 与浏览器环境的时区或语言不一致')
+                raise Failed('Claude and the browser differ in timezone or language')
             return {**{key: observed[key] for key in ('tz', 'timezone_file', 'localtime', 'offset', 'lang', 'lc_all')},
                     'claude': {key: app[key] for key in ('timezone', 'locale', 'language', 'offset')}}
         record('guest_settings', guest_settings)
 
-        record('browser_settings', lambda: need(browser, browser_error, '浏览器检查结果'))
+        record('browser_settings', lambda: need(browser, browser_error, 'result of the browser check'))
 
         def filesystem_boundary():
-            observed = need(system, system_error, '浏览器容器的系统设置')
+            observed = need(system, system_error, 'system settings from the browser container')
             for role, state in states.items():
                 if state is None:
-                    raise Unknown(role + ' 容器已不存在')
+                    raise Unknown(f'the {role} container is gone')
                 if state['HostConfig'].get('Privileged') or state['HostConfig'].get('PidMode'):
-                    raise Failed(role + ' 容器有特权或共享了宿主 PID')
+                    raise Failed(f'the {role} container is privileged or shares the host PID namespace')
                 mounts = state.get('Mounts', [])
                 actual = {mount['Destination']: mount['Source'] for mount in mounts if mount['Type'] == 'bind'}
                 if actual != session.expected_mounts(role):
-                    raise Failed(role + ' 容器挂载了白名单以外的宿主目录')
+                    raise Failed(f'the {role} container mounts a host directory outside the allowed list')
                 volumes = {mount['Destination']: mount.get('Name') for mount in mounts if mount['Type'] == 'volume'}
                 if volumes != session.expected_volumes(role) or any(mount['Type'] not in ('bind', 'volume') for mount in mounts):
-                    raise Failed(role + ' 容器有白名单以外的卷')
+                    raise Failed(f'the {role} container has a volume outside the allowed list')
                 # What the cage must not change: the probe code the audit runs inside
                 # it, the host bridge keys, the dialer socket directory. Whether the
                 # other mounts are writable is a matter of function, not isolation.
                 writable = [mount['Destination'] for mount in mounts
                             if mount['RW'] and mount['Destination'] in session.readonly_destinations(role)]
                 if writable:
-                    raise Failed(f'{role} 容器中应只读的挂载可写：' + '、'.join(writable))
+                    raise Failed(f'the {role} container can write mounts that must be read-only: ' + ', '.join(writable))
                 if not state['HostConfig']['AutoRemove']:
-                    raise Failed(role + ' 容器退出时不会清理临时数据')
+                    raise Failed(f'the {role} container keeps its temporary data after it exits')
             if not observed['private_paths_absent']:
-                raise Failed('浏览器能读到网关密钥或 Docker socket')
+                raise Failed('the browser can read gateway secrets or a Docker socket')
             return {'workspace': [str(path) for path in args.workspace],
                     'claude_state': str(args.claude_config_dir), 'environment_state': session.state.describe(),
                     'active_probe': filesystem_challenge(session),
-                    'scope': '仅明示的 workspace、Claude 凭证与实例状态目录，以及只读的探针代码；'
-                             '无额外宿主挂载、Docker socket 或网关凭证'}
+                    'scope': 'only the configured workspaces, Claude credentials, the instance state and the '
+                             'read-only probe code; no other host mounts, Docker socket or gateway secrets'}
         record('filesystem_boundary', filesystem_boundary)
 
         def management_boundary():
             boundary = part(network, 'host_boundary')
-            observed = need(system, system_error, '浏览器容器的系统设置')
+            observed = need(system, system_error, 'system settings from the browser container')
             counters()
             if not grew(before, after, 'CAGED_PRIVATE'):
-                raise Unknown('宿主与元数据探针失败，但没有留下内核拒绝计数')
+                raise Unknown('the host and metadata probes failed but left no kernel drop count')
             if observed['management_http'] != 401 or not observed['no_network_admin_or_raw']:
-                raise Failed('网关控制接口可匿名访问，或应用容器有网络管理权限')
+                raise Failed('the gateway controller answers without its secret, or an app container has network admin rights')
             published = {port: values for port, values in states['gateway']['NetworkSettings']['Ports'].items() if values}
             ui_service = f'{args.browser_ui_port}/tcp'
             if list(published) != [ui_service] or not all(binding['HostIp'] == '127.0.0.1' for binding in published[ui_service]):
-                raise Failed('网关发布了浏览器界面以外的端口，或未只绑定 127.0.0.1')
-            bridge = ('开启：环境内可通过 ssh host 以你的身份操作宿主，这是有意保留的唯一通道'
-                      if args.host_bridge else '关闭')
+                raise Failed('the gateway publishes more than the browser UI, or not only on 127.0.0.1')
+            bridge = ('on: ssh host acts on the host as you; this is the one intended way out'
+                      if args.host_bridge else 'off')
             return {**boundary, 'controller_without_secret': 401, 'host_bridge': bridge,
-                    'published': '只发布 localhost 浏览器界面；控制器与 DevTools 不发布'}
+                    'published': 'only the browser UI on localhost; the controller and DevTools are not published'}
         record('management_boundary', management_boundary)
 
         def udp_policy():
             udp = part(network, 'udp')
-            return {'policy': 'UDP 经节点转发；物理网卡 UDP 由默认拒绝策略丢弃', 'stun': udp}
+            return {'policy': 'UDP goes through the node; UDP on the physical interface is dropped', 'stun': udp}
         record('udp_policy', udp_policy)
 
         def ipv6_policy():
             ipv6 = part(network, 'ipv6')
             counters()
             if ipv6['global_addresses']:
-                raise Failed(f'环境内有 {ipv6["global_addresses"]} 个全局 IPv6 地址')
+                raise Failed(f'the cage has {ipv6["global_addresses"]} global IPv6 addresses')
             if ipv6['default_routes'] and not grew(before, after, 'IPV6_OUTPUT'):
-                raise Unknown('存在 IPv6 默认路由，但 IPv6 探针没有留下内核拒绝计数')
+                raise Unknown('there is an IPv6 default route but the IPv6 probe left no kernel drop count')
             return {**ipv6, 'kernel_policy': 'default deny',
                     'ipv6_denied_packets': after['counters']['IPV6_OUTPUT'] - before['counters']['IPV6_OUTPUT']}
         record('ipv6_policy', ipv6_policy)
 
         def exit_consistency():
             tcp, udp = part(network, 'tcp'), part(network, 'udp')
-            seen = need(browser, browser_error, '浏览器出口')
-            app = need(claude, claude_error, 'Claude 出口')
+            seen = need(browser, browser_error, 'browser exit')
+            app = need(claude, claude_error, 'Claude exit')
             for country, address in ((tcp['country'], tcp['ip']), (seen['country'], seen['ip'])):
                 check_country(country, options['expected_country'], address)
             samples = {'terminal': tcp['ip'], 'udp': udp['public_ip'], 'browser': seen['ip'], 'claude': app['tcp']['ip']}
             if len(set(samples.values())) != 1:
-                raise Failed('终端、UDP、浏览器与 Claude 的出口 IP 不一致：' + json.dumps(samples))
+                raise Failed('terminal, UDP, browser and Claude exits differ: ' + json.dumps(samples))
             return {'country': tcp['country'], 'expected_country': options['expected_country'],
-                    'mainland_china': '未命中大陆网段，定位也不是 CN', 'sampled_ip': tcp['ip'],
-                    'samples': list(samples), 'scope': '仅限本次采样'}
+                    'mainland_china': 'not in a mainland range and not located in CN', 'sampled_ip': tcp['ip'],
+                    'samples': list(samples), 'scope': 'these samples only'}
         record('exit_consistency', exit_consistency)
 
         # Last: the disposable drill removes this audit's gateway.
         record('fail_closed', lambda: live_drill(session) if live else disposable_drill(session))
         if network_error:
-            report['error'] = '网络探针：' + network_error
+            report['error'] = 'network probe: ' + network_error
     except Exception as error:
         report['error'] = str(error)
         raise
     finally:
         report['passed'] = sum(row['state'] == 'passed' for row in report['checks'])
         report['total'] = len(CHECKS)
-        print_report(report)
+        saved = None
         try:
             folder = Path(args.state_dir) / instance.name
             if folder.is_dir():
-                stateful.write_private(folder / 'last-audit.json', report)
+                saved = folder / 'last-audit.json'
+                stateful.write_private(saved, report)
         except OSError:
-            pass
+            saved = None
+        print_report(report, saved)
     if report['passed'] != report['total']:
-        raise CageError(f'Isolation evidence incomplete: {report["passed"]}/{report["total"]} checks passed')
+        missing = report['total'] - report['passed']
+        raise CageError(f'{missing} of {report["total"]} checks did not pass; see the list above.')
 
 
-def print_report(report):
-    marks = {'passed': '通过', 'failed': '失败', 'unknown': '未知'}
-    print(f'\n网络与隔离检查（{"当前运行实例" if report["mode"] == "live" else "一次性实例"} {report["instance"]}）'
-          f'：{report["passed"]}/{report["total"]} 通过', flush=True)
+# One line per passed check: the evidence a reader looks for first.
+SUMMARIES = {
+    'egress_policy': lambda e: f'default-deny firewall · {e["kernel_direct_denied"]} direct packets dropped · node '
+                               + (f'via the host dialer on {e["node_interface"]}' if e.get('node_interface') else 'direct'),
+    'proxy_transport': lambda e: f'exit {e["ip"]} ({e["country"]}) from {e["ip_source"]}',
+    'dns_transport': lambda e: f'DoH through the node via {", ".join(e["upstreams"])} · '
+                               f'{e["deny_packets"]} public DNS packets dropped',
+    'guest_settings': lambda e: f'{e["tz"]} · {e["lang"]} · Claude matches',
+    'browser_settings': lambda e: f'{e["timezone"]} · {e["language"]} · exit {e["ip"]}',
+    'filesystem_boundary': lambda e: 'only the configured mounts · shared round trip works · host-private file hidden',
+    'management_boundary': lambda e: f'{e["literal_targets"]} host and metadata ports unreachable · controller needs '
+                                     f'its secret · host bridge {e["host_bridge"].split(":")[0]}',
+    'fail_closed': lambda e: (f'{e["kernel_direct_denied"]} packets dropped once a test UID lost the proxy route'
+                              if 'kernel_direct_denied' in e else 'gateway removed: terminal, browser and Claude blocked'),
+    'udp_policy': lambda e: f'STUN sees {e["stun"]["public_ip"]} through the node',
+    'ipv6_policy': lambda e: f'{e["global_addresses"]} global addresses · requests blocked',
+    'exit_consistency': lambda e: f'{e["sampled_ip"]} ({e["country"]}) for terminal, UDP, browser and Claude',
+}
+STATES = {'passed': 'ok', 'failed': 'fail', 'unknown': 'warn'}
+
+
+def summary(row):
+    if row['state'] != 'passed':
+        return str(row['evidence'])
+    try:
+        return SUMMARIES[row['id']](row['evidence'])
+    except (KeyError, TypeError, AttributeError):
+        return ''
+
+
+def print_report(report, saved=None):
+    if ui.JSON:
+        ui.result(report)
+        return
+    where = 'running instance' if report['mode'] == 'live' else 'disposable instance'
+    ui.line()
+    ui.heading(f'Network and isolation audit ({where} {report["instance"]}): '
+               f'{report["passed"]}/{report["total"]} passed')
+    width = max(len(title) for _, title in CHECKS)
     for row in report['checks']:
-        line = f'  [{marks[row["state"]]}] {row["title"]}'
-        if row['state'] != 'passed':
-            line += f'：{row["evidence"]}'
-            if row.get('remedy'):
-                line += f'（处理：{row["remedy"]}）'
-        print(line, flush=True)
-    print('Network and isolation audit: ' + json.dumps(report, ensure_ascii=False), flush=True)
+        ui.step(STATES[row['state']], row['title'], summary(row),
+                [('Fix', row['remedy'])] if row.get('remedy') else (), out=True, width=width)
+    if saved:
+        ui.line(f'Full report: {ui.short(saved, ROOT)}')

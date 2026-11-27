@@ -4,10 +4,9 @@ import os
 import secrets
 import socket
 import subprocess
-import sys
 import time
 import uuid
-from . import dialer, docker as engine, hostbridge, images, proxy, stateful
+from . import dialer, docker as engine, hostbridge, images, proxy, stateful, ui
 from .config import runtime_policy
 from .errors import CageError
 from .instance import Instance
@@ -20,6 +19,19 @@ EMPTY_PROXY_ENV = [item for key in (
 ) for item in ('-e', key + '=')]
 
 
+# Network verify results: (key, label, one-line summary of a passed item).
+VERIFY_ITEMS = [
+    ('dns', 'DNS', lambda value: 'resolver 127.0.0.1 · DoH through the node via ' + ', '.join(value.get('upstreams', []))
+                                 + ' · public DNS and DoT blocked'),
+    ('tcp', 'HTTPS exit', lambda value: f'{value["ip"]} ({value["country"]}) from {value["ip_source"]}, '
+                                        f'located by {value["location_source"]}'),
+    ('udp', 'UDP', lambda value: f'STUN sees {value["public_ip"]}'),
+    ('physical_direct', 'Direct route', lambda value: 'the physical interface reaches nothing directly'),
+    ('ipv6', 'IPv6', lambda value: f'blocked · {value["global_addresses"]} global addresses'),
+    ('host_boundary', 'Host ports', lambda value: f'{value["literal_targets"]} host, bridge and metadata ports unreachable'),
+]
+
+
 class Session:
     def __init__(self, args, detached=False):
         self.args = args
@@ -28,6 +40,7 @@ class Session:
         args.host_bridge_tcp = hostbridge.tcp_endpoint(args)
         self.policy = runtime_policy(args)
         self.gateway_process = None
+        self.logs = {}  # role -> open log file of a foreground container
         self.check_process = None
         self.browser_process = None
         self.claude_process = None
@@ -46,6 +59,7 @@ class Session:
                                                    proxy.source_resolvers(self.args.proxy_file_path))
         pinned = {'host': None if selected_proxy.get('server') == str(source['server']) else str(source['server']),
                   'addresses': addresses, 'resolved_at': time.time()}
+        ui.ok('Node', f'{self.args.node} → {", ".join(addresses)}')
         self.node_path = self.choose_node_path(selected_proxy, addresses, str(source['server']))
         selected_proxy, firewall_addresses, extra_mounts = self.gateway_endpoint(selected_proxy, addresses, str(source['server']))
         pinned['path'] = {key: value for key, value in self.node_path.items() if key != 'check'}
@@ -81,14 +95,15 @@ class Session:
             if result.returncode:
                 raise CageError('Cannot initialize detached gateway; no proxy configuration was printed')
         else:
-            self.gateway_process = subprocess.Popen(command, stdin=subprocess.PIPE, text=True)
+            self.gateway_process = subprocess.Popen(command, stdin=subprocess.PIPE, text=True,
+                                                    stdout=self.log('network'), stderr=subprocess.STDOUT)
             self.gateway_process.stdin.write(payload)
             self.gateway_process.stdin.close()
         del selected_proxy, source
         status, state = self.wait_ready()
         self.use_network(status, state)
         egress = self.check_egress()
-        print(f'Network ready: {status["node"]}; exit={egress["country"]}; global; DNS through the node; IPv6 blocked.', flush=True)
+        ui.ok('Gateway', f'exit {egress["ip"]} ({egress["country"]}) · DNS through the node · IPv6 blocked')
 
     def choose_node_path(self, node, addresses, server):
         """Direct, or through the host dialer when a host TUN/VPN would carry the
@@ -112,7 +127,7 @@ class Session:
             message = 'WSL cannot see whether Windows routes public traffic through a TUN or VPN.'
         if mode == 'direct' or (mode == 'auto' and not found and not prefer):
             if found:
-                print('Warning: ' + message + ' proxy.host_tunnel is direct, so it is used anyway.', file=sys.stderr, flush=True)
+                ui.warn('Host TUN', f'{found}: proxy.host_tunnel is direct, so the node connection goes through it.')
             return {'kind': 'direct'}
         def unavailable(problem):
             if self.dialer_registered:
@@ -120,7 +135,7 @@ class Session:
                 self.dialer_registered = False
             if mode == 'dialer':
                 raise CageError(f'{problem} (proxy.host_tunnel is dialer)')
-            print(f'Warning: {message} {problem} Connecting directly.', file=sys.stderr, flush=True)
+            ui.warn('Host dialer', f'{problem} Connecting directly.', [('Host TUN', found)] if found else ())
             return {'kind': 'direct'}
         if not running:
             return unavailable('The host dialer is not running (see state/.dialer/dialer.log); start the cage with ./cage.')
@@ -143,17 +158,18 @@ class Session:
             if default.get('ok') and mode == 'auto':
                 dialer.unregister(self.args.instance)
                 self.dialer_registered = False
-                print(f'Warning: the node answers only through the host\'s default path, not over {interface} '
-                      f'({bound.get("error")}); connecting directly.', file=sys.stderr, flush=True)
+                ui.warn('Host dialer', f'The node answers only through the host\'s default path, not over {interface} '
+                                       f'({bound.get("error")}); connecting directly.')
                 return {'kind': 'direct'}
             raise CageError(f'The selected node is not reachable over {interface} ({bound.get("error")}) '
                             f'nor through the host\'s default path ({default.get("error") or "ok"}). '
                             'Check the node or choose another with --node.')
         bound_exit, default_exit = check.get('bound_exit'), check.get('default_exit')
-        exits = f'; host exit {bound_exit} over {interface}' if bound_exit else ''
+        exits = f'{bound_exit} over {interface}' if bound_exit else ''
         if bound_exit and default_exit and default_exit != bound_exit:
             exits += f', {default_exit} through the TUN'
-        print(f'Host dialer: node connection bound to {interface}, bypassing {found or "the host routes"}{exits}.', flush=True)
+        ui.ok('Host dialer', f'node connection bound to {interface}, bypassing {found or "the host routes"}',
+              [('Host exit', exits)] if exits else ())
         path = {'kind': path_kind, 'interface': interface, 'tunnel': found, 'check': check}
         if dialer.uses_socket(path_kind):
             path['socket'] = dialer.MOUNT + '/' + dialer.SOCKET
@@ -239,7 +255,7 @@ class Session:
                    '--network', 'container:' + self.network_container_id, '--cap-drop', 'ALL',
                    '-e', POLICY_ENV + '=' + json.dumps(self.policy),
                    *EMPTY_PROXY_ENV, '--entrypoint', 'sleep', images.IMAGES['network'], 'infinity']
-        self.check_process = subprocess.Popen(command)
+        self.check_process = subprocess.Popen(command, stdout=self.log('check'), stderr=subprocess.STDOUT)
 
         def exited():
             if self.check_process.poll() is not None:
@@ -251,15 +267,24 @@ class Session:
         self.start_clients()
         self.start_check()
         result = self.exec_probe(self.instance.check, 'caged.runtime.checks.network', 'verify', timeout=150)
-        print(result.stdout.strip(), flush=True)
-        problems = [f'{key}: {value["error"]}' for key, value in json.loads(result.stdout).items() if 'error' in value]
-        if problems:
-            raise CageError('Network verification failed: ' + '; '.join(problems))
+        checks = json.loads(result.stdout)
+        failed = []
+        for key, label, summary in VERIFY_ITEMS:
+            value = checks.get(key) or {'error': 'no result'}
+            if 'error' in value:
+                failed.append(label)
+                ui.fail(label, value['error'])
+            else:
+                ui.ok(label, summary(value))
+        if failed:
+            ui.result({'checks': checks})
+            raise CageError('Network verification failed: ' + ', '.join(failed))
         # The consumer retains the namespace after the gateway is removed.
         engine.stop_managed(self.instance.network, self.session_id)
         result = self.exec_probe(self.instance.check, 'caged.runtime.checks.network', 'fail-closed', timeout=25)
-        print(result.stdout.strip(), flush=True)
-        print('PASS: HTTPS, DNS, UDP/STUN, physical-interface block, IPv6 block and proxy-removal kill switch.', flush=True)
+        ui.ok('Fail-closed', 'gateway removed: HTTPS, the physical interface, DNS and UDP are all blocked')
+        ui.result({'checks': checks, 'fail_closed': json.loads(result.stdout)})
+        ui.line('\nVerified: HTTPS, DNS, UDP, direct-route block, IPv6 block and the kill switch.')
 
     def browser_command(self):
         flags = (f'--lang={self.args.language} --accept-lang={",".join(self.args.languages)} '
@@ -369,7 +394,7 @@ class Session:
             command.insert(2, '-d')
             engine.call(command)
         else:
-            self.claude_process = subprocess.Popen(command)
+            self.claude_process = subprocess.Popen(command, stdout=self.log('claude'), stderr=subprocess.STDOUT)
         self.enroll_agent(self.instance.claude, 'claude')
         result = self.check_claude(settings_only=True)
         self.hint_missing_ssh()
@@ -381,9 +406,8 @@ class Session:
             return
         found = engine.docker('exec', self.instance.claude, 'sh', '-c', 'command -v ssh && command -v rsync', check=False)
         if found.returncode:
-            print("Notice: the host bridge needs ssh (and rsync for rsync host:) in the Claude environment; install "
-                  "them once with: ./cage shell -- sh -c 'sudo apt-get update && sudo apt-get install -y "
-                  "openssh-client rsync'", flush=True)
+            ui.warn('Host bridge', 'ssh (and rsync for rsync host:) are missing in the Claude environment; install them '
+                    "once with: ./cage shell -- sh -c 'sudo apt-get update && sudo apt-get install -y openssh-client rsync'")
 
     def check_claude(self, settings_only=False):
         deadline = time.monotonic() + 50
@@ -394,10 +418,8 @@ class Session:
             result = self.exec_probe(self.instance.claude, 'caged.runtime.checks.claude', *(['--settings-only'] if settings_only else []), user=f'{self.args.puid}:{self.args.pgid}',
                                      check=False, timeout=45)
             if result.returncode == 0:
-                value = json.loads(result.stdout)
-                print('Claude check: ' + result.stdout.strip(), flush=True)
-                return value
-            last_error = (result.stdout or result.stderr).strip()
+                return json.loads(result.stdout)
+            last_error = ui.probe_error((result.stdout or result.stderr).strip())
             state = engine.inspect(self.instance.claude)
             # Foreground diagnostic sessions launch docker with Popen; it may
             # not have created the container yet. Only a completed launch or
@@ -419,11 +441,9 @@ class Session:
                 raise CageError('Network exited; closing the browser.')
             result = self.exec_probe(self.instance.network, 'caged.runtime.checks.browser', *(['settings'] if settings_only else []), check=False, timeout=60)
             if result.returncode == 0:
-                print('Browser check: ' + result.stdout.strip(), flush=True)
-                page = self.fetch_ui_head()
-                print('Remote browser UI: ' + page.stdout.splitlines()[0], flush=True)
+                self.fetch_ui_head()  # raises unless the desktop UI answers
                 return json.loads(result.stdout)
-            last_error = (result.stdout or result.stderr).strip()
+            last_error = ui.probe_error((result.stdout or result.stderr).strip())
             if self.detached:
                 current = engine.inspect(self.instance.browser)
                 if current is None or not current['State']['Running']:
@@ -472,7 +492,7 @@ class Session:
             command.insert(2, '-d')
             engine.call(command)
         else:
-            self.browser_process = subprocess.Popen(command)
+            self.browser_process = subprocess.Popen(command, stdout=self.log('browser'), stderr=subprocess.STDOUT)
         self.enroll_agent(self.instance.browser, 'browser')
         return self.check_browser(settings_only=True)
 
@@ -506,12 +526,28 @@ class Session:
         self.prepare_state()
         self.start_browser()
         self.start_claude()
-        self.wait_gate_open()
-        return self.check_browser(), self.check_claude()
+        permit = self.wait_gate_open()
+        ui.ok('Outbound', 'open · ' + permit['reason'][:1].lower() + permit['reason'][1:])
+        browser, claude = self.check_browser(), self.check_claude()
+        ui.ok('Browser', f'{browser["timezone"]} · {browser["language"]} · exit {browser["ip"]} ({browser["country"]}) '
+                         '· built-in DoH off · desktop UI answers')
+        version = claude['version'].replace('(Claude Code)', '').strip()
+        ui.ok('Claude', f'{version} · {claude["timezone"]} · state writable · exit {claude["tcp"]["ip"]}')
+        return browser, claude
 
     def audit(self, live=False):
         from .audit import run_audit
         run_audit(self, live)
+
+    def log_path(self, role):
+        return ROOT / 'state' / '.logs' / f'{self.instance.name}-{role}.log'
+
+    def log(self, role):
+        """A foreground container's own output goes to a file, not between the steps."""
+        path = self.log_path(role)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.logs[role] = path.open('w')
+        return self.logs[role]
 
     def close(self):
         if self.dialer_registered:
@@ -520,7 +556,7 @@ class Session:
             try:
                 engine.stop_managed(name, self.session_id)
             except Exception as error:
-                print(f'Cleanup notice for {name}: {type(error).__name__}', file=sys.stderr)
+                ui.warn('Cleanup', f'{name}: {type(error).__name__}')
         for process in (self.claude_process, self.browser_process, self.check_process, self.gateway_process):
             if process is not None:
                 try:
@@ -532,10 +568,12 @@ class Session:
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait()
+        for handle in self.logs.values():
+            handle.close()
         try:
             self.state.release()  # a no-op while another launcher's containers use the state
         except Exception as error:
-            print(f'Cleanup notice for the environment storage: {error}', file=sys.stderr)
+            ui.warn('Cleanup', f'environment storage: {error}')
 
     def wait_ready(self, timeout=50, owner=True):
         """owner=None accepts a gateway another launcher started (attach)."""
@@ -554,7 +592,8 @@ class Session:
                     if result.returncode == 0:
                         return json.loads(result.stdout), state
             if process is not None and process.poll() is not None:
-                raise CageError('Network exited before readiness. Browser was not started.')
+                raise CageError('Network exited before readiness. Browser was not started. '
+                                f'Its output is in {self.log_path("network")}.')
             if process is None and (state is None or not state['State']['Running']):
                 raise CageError('Gateway exited before readiness. Run ./cage up again.')
             time.sleep(0.3)

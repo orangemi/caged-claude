@@ -65,7 +65,7 @@ class Layout(unittest.TestCase):
                                      '--config', 'nodes.yaml', '--workspace', '.'],
                                     cwd=caller, env=env, text=True, capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn('from-caller\tanytls\tUDP=True', result.stdout)
+            self.assertRegex(result.stdout, r'(?m)^from-caller\s+anytls\s+UDP$')
 
     def test_minimal_example_finds_proxy_file_beside_settings_from_another_directory(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -82,5 +82,5 @@ class Layout(unittest.TestCase):
             result = subprocess.run([str(ROOT / 'cage'), 'nodes', '--settings', str(settings / 'app.yaml')],
                                     cwd=caller, env=env, text=True, capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn('beside-settings\tanytls\tUDP=True', result.stdout)
+            self.assertRegex(result.stdout, r'(?m)^beside-settings\s+anytls\s+UDP$')
             self.assertNotIn('wrong-directory', result.stdout)

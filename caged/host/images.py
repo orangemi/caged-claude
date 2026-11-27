@@ -2,7 +2,8 @@
 import hashlib
 import shlex
 import subprocess
-from . import docker as engine
+import time
+from . import docker as engine, ui
 from .errors import CageError
 from .paths import ROOT
 
@@ -56,7 +57,15 @@ def build(role='network', force=False):
         # --pull re-resolves base images for the daemon's platform instead of
         # trusting a local tag, which may hold another architecture's image.
         # Builds only run when the inputs change, so the extra lookup is rare.
-        result = subprocess.run(['docker', 'build', '--pull', '--label', 'io.caged-claude.source=' + expected,
-                                 '-t', image, '-f', str(ROOT / 'containers' / role / 'Dockerfile'), str(ROOT)])
+        log = ROOT / 'state' / '.logs' / f'build-{role}.log'
+        log.parent.mkdir(parents=True, exist_ok=True)
+        ui.info('Image', f'building {role} (its inputs changed); output in {log.relative_to(ROOT)}')
+        started = time.monotonic()
+        with log.open('w') as output:
+            result = subprocess.run(['docker', 'build', '--pull', '--label', 'io.caged-claude.source=' + expected,
+                                     '-t', image, '-f', str(ROOT / 'containers' / role / 'Dockerfile'), str(ROOT)],
+                                    stdout=output, stderr=subprocess.STDOUT)
         if result.returncode:
-            raise CageError(role + ' image build failed')
+            tail = '\n'.join(log.read_text(errors='replace').splitlines()[-25:])
+            raise CageError(f'The {role} image build failed. Last lines of {log}:\n{tail}')
+        ui.ok('Image', f'{role} built in {time.monotonic() - started:.0f} s')

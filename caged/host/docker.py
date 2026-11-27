@@ -4,12 +4,15 @@ import subprocess
 import time
 from .errors import CageError
 from .paths import ROOT, LABEL
+from .ui import probe_error
 
 
 def call(args, *, check=True, timeout=30):
     result = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
     if check and result.returncode:
-        detail = (result.stderr or result.stdout).strip()[-1800:]
+        # A probe answers {"error": ...} on stdout; show its message, not the JSON.
+        message = probe_error(result.stdout)
+        detail = (message if message != result.stdout else (result.stderr or result.stdout)).strip()[-1800:]
         raise CageError(detail or f'{args[0]} failed')
     return result
 

@@ -1,7 +1,7 @@
 """Dispatch ./cage subcommands. The shell script handles help and init itself."""
 import os
 import sys
-from . import claude, cli, logs, shell
+from . import claude, cli, logs, shell, ui
 from .config import ConfigError
 from .errors import CageError
 
@@ -14,7 +14,7 @@ EXEC = {'claude': claude.command, 'shell': shell.command, 'logs': logs.command}
 
 
 def fail(message):
-    print('Error: ' + message, file=sys.stderr)
+    ui.error(message)
     raise SystemExit(2)
 
 
@@ -37,7 +37,7 @@ def main(argv=None):
             os.execvp(arguments[0], arguments)
             return None  # not reached: execvp replaces this process
         except (ConfigError, CageError, OSError) as error:
-            print('Error: ' + str(error), file=sys.stderr)
+            ui.error(error)
             raise SystemExit(1)
     fail(f'unknown subcommand {name!r}; run ./cage help')
 

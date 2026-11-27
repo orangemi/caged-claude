@@ -137,7 +137,7 @@ launch() {
     image=caged-claude-launcher:$(cksum < "$dockerfile" | cut -d ' ' -f 1)
     if ! docker image inspect "$image" >/dev/null 2>&1; then
         docker info >/dev/null 2>&1 || fail 'Docker daemon is not reachable. Start OrbStack/Docker and try again.'
-        printf 'Building launcher image %s (first run only)...\n' "$image" >&2
+        printf '  · %-12s %s\n' Image "building the launcher $image (first run only)" >&2
         docker build -q -t "$image" - < "$dockerfile" >/dev/null || fail 'Launcher image build failed.'
     fi
     case ${1:-} in up|check) dialer_start ;; esac
@@ -226,12 +226,13 @@ dialer_build() {  # dialer_build GOOS GOARCH: print the binary's path, building 
     name=caged-dialer-$1-$2-$sum
     [ "$1" = windows ] && name=$name.exe
     if [ ! -x "$dir/$name" ]; then
-        printf 'Building the host dialer for %s (first run only)...\n' "$1" >&2
+        printf '  · %-12s %s\n' 'Host dialer' "building for $1 (first run only)" >&2
         if ! docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e GOCACHE=/tmp/go-cache \
                 -e GOTOOLCHAIN=local -e CGO_ENABLED=0 -e "GOOS=$1" -e "GOARCH=$2" \
                 --mount "type=bind,src=$root/dialer,dst=/src,readonly" --mount "type=bind,src=$dir,dst=/out" \
-                -w /src "$DIALER_BUILDER" go build -trimpath -ldflags=-s -o "/out/$name" . >&2; then
-            printf 'Warning: could not build the host dialer; a host TUN/VPN may then break the node connection.\n' >&2
+                -w /src "$DIALER_BUILDER" go build -trimpath -ldflags=-s -o "/out/$name" . >"$dir/build.log" 2>&1; then
+            printf '  ! %-12s %s\n' 'Host dialer' 'could not be built; a host TUN/VPN may then break the node connection' >&2
+            tail -n 20 "$dir/build.log" >&2
             return 1
         fi
         find "$dir" -name "caged-dialer-$1-*" ! -name "$name" -exec rm -f {} + 2>/dev/null
