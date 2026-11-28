@@ -54,6 +54,8 @@ workspace:                      # 要交给 Claude 的项目目录，按原路�
 
 关闭终端、退出 `./cage claude` 都不会停止容器，需要停止时执行 `./cage down`。
 
+想用图形界面，可以用 VS Code 直接连到笼子里的 Claude 容器，不需要 SSH，见 [用 VS Code 连接笼子里的 Claude](docs/vscode.md)。
+
 ## 常见操作
 
 **在环境里装软件**：装上的软件会一直保留。第一次使用 apt 前要先更新索引：
@@ -117,5 +119,6 @@ macOS 上，整个环境是一个 ext4 镜像文件 `state/<实例>/disk.img`。
 ## 文档
 
 - [配置参考](docs/configuration.md)：全部配置项、优先级、端口、workspace、launcher 的环境变量
+- [用 VS Code 连接笼子里的 Claude](docs/vscode.md)：Dev Containers 的配置方法、日常使用和注意事项
 - [架构](docs/architecture.md)：网络边界、持续检查、数据生命周期、验证与审计、目录结构
 - [有状态环境设计](docs/stateful-service.md)、[宿主桥设计](docs/host-bridge.md)、[实现原理](docs/implementation.md)
