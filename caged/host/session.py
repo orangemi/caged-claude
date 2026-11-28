@@ -20,6 +20,9 @@ EMPTY_PROXY_ENV = [item for key in (
 ) for item in ('-e', key + '=')]
 
 
+# Read by VS Code's Dev Containers when it attaches (docs/vscode.md).
+DEVCONTAINER_VSCODE = {'extensions': ['anthropic.claude-code'], 'settings': {'remote.autoForwardPorts': False}}
+
 # Network verify results: (key, label, one-line summary of a passed item).
 VERIFY_ITEMS = [
     ('dns', 'DNS', lambda value: 'resolver 127.0.0.1 · DoH through the node via ' + ', '.join(value.get('upstreams', []))
@@ -439,10 +442,18 @@ class Session:
             item for destination, source in self.readonly_mounts().items()
             for item in ('--mount', f'type=bind,src={source},dst={destination},readonly')]
 
+    def devcontainer_metadata(self):
+        """The image starts as root for its entrypoint, so docker exec defaults to root.
+        VS Code attaches as the app user instead, by number: Docker resolves a user
+        name from the image's own /etc/passwd (claude-user is 1000 there), while the
+        entrypoint renumbers it to PUID:PGID in the persisted /etc that owns /home/claude."""
+        return json.dumps([{'remoteUser': f'{self.args.puid}:{self.args.pgid}',
+                            'customizations': {'vscode': DEVCONTAINER_VSCODE}}])
+
     def claude_command(self):
         # No --init: the image's PID 1 is caged/runtime/init.py (see its docstring).
         return ['docker', 'run', '--rm', '--name', self.instance.claude,
-                *self.managed_labels(client=True),
+                *self.managed_labels(client=True), '--label', 'devcontainer.metadata=' + self.devcontainer_metadata(),
                 '--network', 'container:' + self.network_container_id, '--cap-drop', 'NET_RAW',
                 *self.common_environment(), *self.workspace_arguments(), *self.claude_state_arguments(),
                 '-e', 'CAGED_SUDO=' + ('1' if self.args.claude_sudo else '0'),

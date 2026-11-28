@@ -40,35 +40,40 @@ Mac
 "dev.containers.dockerPath": "/usr/local/bin/docker"
 ```
 
-### 2. 为容器写一份连接配置
+### 2. 第一次连接
 
-在命令面板（`⇧⌘P`）执行 **Dev Containers: Open Named Container Configuration File**，选择 Claude 容器（例如 `caged-claude-claude`），写入：
+1. 命令面板（`⇧⌘P`）执行 **Dev Containers: Attach to Running Container…**，选择 Claude 容器（例如 `caged-claude-claude`）。
+2. VS Code 打开一个新窗口，左下角显示容器名。第一次会把 VS Code Server 装进容器，需要一点时间。它装在持久化的 `/home/claude` 下，之后重启实例不用重装。
+3. 用 **File → Open Folder…** 打开 workspace 下的项目，路径和 Mac 上完全相同。
+4. 打开 Claude Code 扩展（侧栏的 Claude 图标，或命令面板执行 **Claude Code: Open in New Tab**）。如果之前已经用 `./cage claude` 登录过，这里直接可用；否则按提示登录一次，登录也发生在笼子里。
+
+### caged 已经替你设好的部分
+
+`./cage up` 启动 Claude 容器时带有 `devcontainer.metadata` 标签，Dev Containers 附加时会把它当作默认配置：
+
+| 设置 | 作用 |
+| --- | --- |
+| `remoteUser`：你在 Mac 上的 UID:GID，例如 `501:20` | 以 `claude-user` 身份连接。容器的默认用户是 root（entrypoint 需要 root 来把 `claude-user` 改成你的 UID/GID），以 root 连接的话，Claude 会在 `/home/claude/.claude` 写出 root 所有的文件，之后 `./cage claude` 就写不进去了。这里必须写数字：Docker 按用户名查找时读的是镜像里原来的 `/etc/passwd`，那里的 `claude-user` 还是 1000，读不了属于你的 `/home/claude/.claude`。 |
+| 扩展 `anthropic.claude-code` | 自动在容器里安装 Claude Code 扩展。 |
+| `remote.autoForwardPorts: false` | 关闭自动端口转发。VS Code 默认会把容器里监听的端口转发到 Mac 本机，关掉它，笼子里的服务就不会被意外开到 Mac 上。 |
+
+标签在容器启动时设定。升级 caged 之前就在运行的实例，要 `./cage down && ./cage up` 一次才有这个标签；可以用下面的命令确认：
+
+```bash
+docker inspect -f '{{ index .Config.Labels "devcontainer.metadata" }}' caged-claude-claude
+```
+
+### 可选：固定打开目录
+
+想让每次附加都直接进入某个项目，在命令面板执行 **Dev Containers: Open Named Container Configuration File**，选择 Claude 容器，写入：
 
 ```json
 {
-  "remoteUser": "claude-user",
-  "workspaceFolder": "/Users/yourname/Projects/your-project",
-  "extensions": ["anthropic.claude-code"],
-  "settings": {
-    "remote.autoForwardPorts": false
-  }
+  "workspaceFolder": "/Users/yourname/Projects/your-project"
 }
 ```
 
-| 字段 | 作用 |
-| --- | --- |
-| `remoteUser` | **必须是 `claude-user`**。容器的默认用户是 root；以 root 连接时，Claude 会在 `/home/claude/.claude` 写出 root 所有的文件，之后 `./cage claude` 就写不进去了。`claude-user` 会在容器启动时改成你在 Mac 上的 UID/GID。 |
-| `workspaceFolder` | 打开时进入的目录，填 workspace 下的项目路径，和 Mac 上的路径完全相同。 |
-| `extensions` | 自动在容器里安装 Claude Code 扩展。 |
-| `remote.autoForwardPorts` | 关闭自动端口转发。VS Code 默认会把容器里监听的端口转发到 Mac 本机，关掉它，笼子里的服务就不会被意外开到 Mac 上。 |
-
-这份配置按容器名保存，`./cage down` 后再 `./cage up`，容器名不变，配置继续有效。
-
-### 3. 第一次连接
-
-1. 命令面板执行 **Dev Containers: Attach to Running Container…**，选择 Claude 容器。
-2. VS Code 打开一个新窗口，左下角显示容器名。第一次会把 VS Code Server 装进容器，需要一点时间。它装在持久化的 `/home/claude` 下，之后重启实例不用重装。
-3. 打开 Claude Code 扩展（侧栏的 Claude 图标，或命令面板执行 **Claude Code: Open in New Tab**）。如果之前已经用 `./cage claude` 登录过，这里直接可用；否则按提示登录一次，登录也发生在笼子里。
+这份配置按容器名保存，`./cage down` 后再 `./cage up`，容器名不变，配置继续有效。不要在这里写 `remoteUser`：改成 root 会留下 root 所有的文件，写成 `claude-user` 会被 Docker 解析成 1000（原因见上表）。
 
 ## 日常使用
 
@@ -103,6 +108,7 @@ VS Code 里新开的终端就在容器里，身份是 `claude-user`：
 
 - **Claude Code 扩展只装在容器里。** 在 Mac 本机的 VS Code 里不要登录 Claude Code 扩展，否则同一个账号会经 Mac 本机网络访问 Anthropic，和笼子里的出口不一致。连接容器的窗口里，扩展面板会分成“本地”和“容器”两组，确认 Claude Code 在容器一组。
 - **VS Code 本身的流量。** VS Code 界面、Mac 一侧的扩展和设置同步仍走 Mac 本机网络，与 Claude 账号无关；容器一侧的扩展（包括 Claude Code）和终端里的命令都经节点。
+- **自己用 `docker exec` 时要带数字用户。** 标签只影响 VS Code。手动 `docker exec -it <容器> claude` 不带 `--user` 时是 root，会出现上面说的属主问题；`--user claude-user` 会被解析成 1000，也不对。要手动进入就写 `--user "$(id -u):$(id -g)"`。平时用 `./cage claude` 或 `./cage shell` 就行，它们会自动以正确的身份进入。
 - **不经过 `./cage` 的检查。** VS Code 直接进入容器，不像 `./cage claude` 那样先确认容器仍接在网关上。网关停掉时防火墙照样断开外网，不会泄漏，只是 VS Code 里看到的是连接失败；用 `./cage status` 查看原因。
 - **出站被暂停时。** `./cage pause` 或持续检查失败时，Claude 会连不上 Anthropic，这是预期行为；`./cage resume` 或恢复后重试即可。
 
@@ -110,9 +116,9 @@ VS Code 里新开的终端就在容器里，身份是 `claude-user`：
 
 **附加容器时列表里没有 Claude 容器，或提示找不到 docker**：先 `./cage status` 确认容器在运行；仍然不行，按“让 VS Code 找到 docker”设置 `dev.containers.dockerPath`。
 
-**Claude Code 要求重新登录，或看不到 `./cage claude` 的会话**：多半是以 root 连接的。打开连接配置，确认 `"remoteUser": "claude-user"`，然后 **Developer: Reload Window**。
+**Claude Code 要求重新登录，或看不到 `./cage claude` 的会话**：多半是以 root 连接的。在 VS Code 的终端里执行 `id`，应该是 `uid=<你的 UID>(claude-user)`。如果是 root 或 uid 1000：用上面的 `docker inspect` 命令确认容器带有 `devcontainer.metadata` 标签，且 `remoteUser` 是数字（没有就 `./cage down && ./cage up`）；再检查“固定打开目录”的命名配置里没有写 `remoteUser`，然后 **Developer: Reload Window**。
 
-**`./cage claude` 报无法写入 `/home/claude/.claude`**：之前以 root 连接过，留下了 root 所有的文件。改好 `remoteUser` 后，修正一次属主：
+**`./cage claude` 报无法写入 `/home/claude/.claude`**：之前以 root 连接过，或者手动用不带 `--user` 的 `docker exec` 运行过 `claude`，留下了 root 所有的文件。修正一次属主：
 
 ```bash
 ./cage shell --root -- chown -R claude-user:claude-user /home/claude

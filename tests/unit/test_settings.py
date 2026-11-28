@@ -467,6 +467,14 @@ class Settings(unittest.TestCase):
         session=Session(args)
         session.network_container_id,session.network_session_id='fixture-id','fixture-session'
         command=session.claude_command()
+        # VS Code attaches as the app user, not the image's root default.
+        label=next(item for item in command if item.startswith('devcontainer.metadata='))
+        self.assertEqual(command[command.index(label)-1],'--label')
+        metadata=json.loads(label.split('=',1)[1])
+        # By number: Docker would resolve claude-user from the image's passwd (1000).
+        self.assertEqual(metadata[0]['remoteUser'],f'{args.puid}:{args.pgid}')
+        self.assertEqual(metadata[0]['customizations']['vscode']['extensions'],['anthropic.claude-code'])
+        self.assertIs(metadata[0]['customizations']['vscode']['settings']['remote.autoForwardPorts'],False)
         self.assertNotIn('/run/caged-host',' '.join(command))
         self.assertFalse(any(item.startswith('CAGED_HOST_USER=') for item in command))
         self.assertNotIn('/run/caged-host',session.expected_mounts('claude'))
